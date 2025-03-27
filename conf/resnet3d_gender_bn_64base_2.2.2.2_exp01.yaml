@@ -54,7 +54,7 @@ experiment:
   dbfields_code: |
     [("bin", "gender.encoded")] * maxreps  # Consistent across collections
   epochs_code: |
-    [10] * (maxreps-3) + [20, 30, 50]  # Progressive training
+    [10] * (maxreps-2) + [50, 100]
   prefetches_code: |
     [16] * maxreps  # Reduced prefetch for memory
   attenuates_code: |
