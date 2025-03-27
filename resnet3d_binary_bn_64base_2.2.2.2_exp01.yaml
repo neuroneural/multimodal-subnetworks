@@ -1,0 +1,70 @@
+# resnet3d_gender_bn_64base_2.2.2.2_exp01.yaml
+
+mongo:
+  host: "10.245.12.58"
+  host_slurm: "arctrdcn018.rs.gsu.edu"
+  dbname: "multimodalSubnetworks"
+  collection: "fbirn_falff"  # Will cycle through collections
+  index_id: "id"
+  labelfield: "gender.encoded"  # Using encoded gender (0: Male, 1: Female)
+  datafield: "bin"  # Points to .bin collections
+  validation_percent: 0.2
+
+wandb:
+  team: "neuro-imaging-mmsn"  # Your specified team name
+  project: "multimodal-subnetworks"  # Your requested project name
+
+bit16: False
+
+model:
+  n_classes: 1  # Binary gender classification
+  base_channels: 64  # ResNet base channels
+  model_label: "_resnet3d_gender_64base"
+  volume_shape: [256, 256, 256]
+  maxshape: 300
+  optimize_inline: False
+  use_groupnorm: False  # Using BatchNorm
+  use_me: True  # Memory efficient version
+  loss_weight: [0.5, 0.5]  # Balanced weights
+
+paths:
+  loadcheckpoint: False
+  model: "./logs/tmp/resnet3d_gender/model.last.pth"
+  logdir: "./logs/tmp/resnet3d_gender/"
+
+client_creator:
+  crop_tensor: False
+  normalize: False  # Data already normalized
+
+experiment:
+  lr_scale: 1
+  maxreps: 9  # 3 reps per modality (3 modalities)
+  cubesizes_code: |
+    [256] * maxreps
+  numcubes_code: |
+    [1] * maxreps
+  numvolumes_code: |
+    [2] * maxreps  # Reduced batch size for 3D
+  weights_code: |
+    [1] * maxreps
+  databases_code: |
+    ["multimodalSubnetworks"] * maxreps
+  collections_code: |
+    ["fbirn_falff", "fbirn_smri", "fbirn_dwi"] * (maxreps//3)  # Cycle through
+  dbfields_code: |
+    [("bin", "gender.encoded")] * maxreps  # Consistent across collections
+  epochs_code: |
+    [10] * (maxreps-3) + [20, 30, 50]  # Progressive training
+  prefetches_code: |
+    [16] * maxreps  # Reduced prefetch for memory
+  attenuates_code: |
+    [0.8] * maxreps
+
+resnet_specific:
+  block_type: "basic"
+  layers: [2, 2, 2, 2]  # ResNet architecture
+  initial_stride: 2
+  initial_kernel: 7
+  initial_pool: True
+  dropout: 0.2
+  use_checkpointing: True
