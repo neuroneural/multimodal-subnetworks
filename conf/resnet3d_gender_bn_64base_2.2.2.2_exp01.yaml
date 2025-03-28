@@ -17,8 +17,9 @@ wandb:
 bit16: False
 
 model:
+  config_file: /data/users2/jwardell1/multimodal-subnetworks/conf/resnet3d_gender_bn_64base_2.2.2.2_exp01.yaml
   n_classes: 1  # Binary gender classification
-  base_channels: 64  # ResNet base channels
+  model_channels: 64  # ResNet base channels
   model_label: "_resnet3d_gender_64base"
   volume_shape: [256, 256, 256]
   maxshape: 300
