@@ -1,0 +1,27 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug train_resnet3d.py",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/train_resnet3d.py",
+            "args": [
+                "--config-name", "resnet3d_gender_bn_64base_2.2.2.2_exp01",
+                "--config-dir", "conf/"
+            ],
+            "console": "integratedTerminal",
+            "env": {
+                "HYDRA_FULL_ERROR": "1"  // Ensures full error stack traces
+            },
+            "justMyCode": false  // Allows stepping into library code if needed
+        },
+        {
+            "name": "Python: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal"
+        }
+    ]
+}

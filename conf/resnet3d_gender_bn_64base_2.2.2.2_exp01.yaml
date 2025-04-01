@@ -51,9 +51,9 @@ experiment:
   databases_code: |
     ["multimodalSubnetworks"] * maxreps
   collections_code: |
-    ["fbirn_falff", "fbirn_smri", "fbirn_dwi"] * (maxreps//3)  # Cycle through
+    ["fbirn_falff"] * maxreps
   dbfields_code: |
-    [("bin", "gender.encoded")] * maxreps  # Consistent across collections
+    [("bin", "gender")] * maxreps  # Consistent across collections
   epochs_code: |
     [10] * (maxreps-2) + [50, 100]
   prefetches_code: |

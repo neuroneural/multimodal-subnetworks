@@ -43,8 +43,8 @@ mkdir -p $LOG_DIR
 # Run training with Hydra
 python $SCRIPT_NAME \
     --config-name $CONFIG_NAME \
-    --config-dir $CONFIG_PATH \
-    --logdir=$LOG_DIR
+    --config-dir $CONFIG_PATH 
+
 
 # Cleanup
 sleep 10s

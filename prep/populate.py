@@ -177,9 +177,14 @@ def process_subject(image_path, collection_name, id):
         print(f"✓ Metadata inserted: {meta_result.inserted_id}")
         
         # Insert binary data
-        img_chunks = list(chunk_binobj(img_bin, id, "image", CHUNK_SIZE))
+        gender_value = gender_data['encoded']  # From your existing code
+        gender_tensor = torch.tensor([gender_value], dtype=torch.long)  # Wrap in list to make 1D
+        gender_binary = gender_tensor.numpy().tobytes()
+
+        gender_chunks = list(chunk_binobj(gender_binary, id, "gender", CHUNK_SIZE))
+        img_chunks = list(chunk_binobj(img_bin, id, "image", CHUNK_SIZE))   
         print(f"Inserting {len(img_chunks)} binary chunks...")
-        bin_result = col_bin.insert_many(img_chunks)
+        bin_result = col_bin.insert_many(img_chunks + gender_chunks)
         print(f"✓ Inserted {len(bin_result.inserted_ids)} chunks")
         
         return True
@@ -187,6 +192,8 @@ def process_subject(image_path, collection_name, id):
     except Exception as e:
         print(f"✗ Processing failed: {str(e)}")
         return False
+
+
 
 # Main Execution
 if __name__ == "__main__":

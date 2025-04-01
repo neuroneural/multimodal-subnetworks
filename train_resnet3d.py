@@ -224,7 +224,10 @@ class CustomRunner(dl.Runner):
 
         client = MongoClient("mongodb://" + self.db_host + ":27017")
         db = client[self.db_name]
-        posts = db[self.db_collection + ".bin"]
+        #posts = db[self.db_collection + ".bin"]
+        posts = db[f"{self.db_collection}.bin"]
+
+
         num_examples = int(
             posts.find_one(sort=[(self.index_id, -1)])[self.index_id] + 1
         )
@@ -464,7 +467,7 @@ class ClientCreator:
         return create_client(
             x,
             dbname=self.dbname,
-            colname=self.collection,
+            colname=f"{self.collection}.bin",
             mongohost=self.mongohost,
         )
 
@@ -472,7 +475,7 @@ class ClientCreator:
         return create_client(
             x,
             dbname="multimodalSubnetworks",
-            colname="fbirn_falff",
+            colname="fbirn_falff.bin",
             mongohost=self.mongohost,
         )
 
@@ -491,9 +494,27 @@ class ClientCreator:
 
 
 def assert_equal_length(*args):
-    assert all(
-        len(arg) == len(args[0]) for arg in args
-    ), "Not all parameter lists have the same length!"
+    """Enhanced version that shows which parameters have mismatched lengths"""
+    if not all(len(arg) == len(args[0]) for arg in args):
+        print("\nParameter length mismatch detected:")
+        print("{:<15} {:<10}".format("Parameter", "Length"))
+        print("-" * 25)
+        param_names = [
+            "cubesizes", "numcubes", "numvolumes", "weights",
+            "databases", "collections", "epochs", 
+            "prefetches", "attenuates"
+        ]
+        for name, arg in zip(param_names, args):
+            print("{:<15} {:<10}".format(name, len(arg)))
+        print()
+        
+        # Show first few elements of each list for comparison
+        print("First few elements of each list:")
+        for name, arg in zip(param_names, args):
+            print(f"{name}: {arg[:3]}...")
+        print()
+        
+        raise AssertionError("Not all parameter lists have the same length!")
 
 
 
@@ -514,6 +535,36 @@ def main(cfg: DictConfig):
 
     # MongoDB parameters
     validation_percent = cfg.mongo.validation_percent
+
+    #######################################################
+    # ADD CONNECTION TEST HERE (right after db_host setup)
+    #######################################################
+    try:
+        print("\nVerifying MongoDB connection...")
+        test_client = MongoClient(
+            f"mongodb://{db_host}:27017",
+            serverSelectionTimeoutMS=5000,
+            socketTimeoutMS=10000
+        )
+        test_client.admin.command('ping')
+        db = test_client["multimodalSubnetworks"]
+        
+        # Check both possible collection names
+        target_collections = ["fbirn_falff.bin", "fbirn_falff"]
+        found_collections = [col for col in target_collections if col in db.list_collection_names()]
+        
+        if not found_collections:
+            raise ValueError(f"Neither fbirn_falff nor fbirn_falff.bin found in database")
+        
+        print(f"Verified connection to MongoDB at {db_host}")
+        print(f"Found collections: {found_collections}")
+        print(f"Document count: {db[found_collections[0]].count_documents({})}")
+        test_client.close()
+    except Exception as e:
+        print(f"\nMongoDB connection failed: {str(e)}")
+        print("Available collections:", db.list_collection_names())
+        raise
+    #######################################################
 
     wandb_project = cfg.wandb.project
 
@@ -538,7 +589,9 @@ def main(cfg: DictConfig):
     epochs = eval(cfg.experiment.epochs_code, globals(), context)
     prefetches = eval(cfg.experiment.prefetches_code, globals(), context)
     attenuates = eval(cfg.experiment.attenuates_code, globals(), context)
-
+    #collections = eval(cfg.experiment.collections_code, globals(), context)
+    #collections = [col if col.endswith('.bin') else f"{col}.bin" for col in collections]
+    
     assert_equal_length(
         cubesizes,
         numcubes,
