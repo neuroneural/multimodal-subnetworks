@@ -224,15 +224,14 @@ class CustomRunner(dl.Runner):
 
         client = MongoClient("mongodb://" + self.db_host + ":27017")
         db = client[self.db_name]
-        #posts = db[self.db_collection + ".bin"]
-        posts = db[f"{self.db_collection}.bin"]
+        posts = db[self.db_collection + ".bin"]
 
 
         num_examples = int(
             posts.find_one(sort=[(self.index_id, -1)])[self.index_id] + 1
         )
 
-        tdataset = MongoheadDataset(
+        tdataset = MongoDataset(
             range(num_examples),
             # [
             #     int(x)
@@ -261,8 +260,8 @@ class CustomRunner(dl.Runner):
                 pin_memory=True,
                 worker_init_fn=self.funcs["createclient"],
                 persistent_workers=True,
-                prefetch_factor=4,
-                num_workers=4,  # self.prefetches,
+                prefetch_factor=None,#4,
+                num_workers=1#0,  # self.prefetches,
             ),
             num_prefetches=self.prefetches,
         )
@@ -396,11 +395,11 @@ class CustomRunner(dl.Runner):
                         # print("label.shape: ", label.shape)
                         # stop
 
-                        loss = self.criterion(y_hat, label)
+                        loss = self.criterion(y_hat, label.float())
                     scaler.scale(loss).backward()
                 else:
                     y_hat = self.model.forward(sample)
-                    loss = self.criterion(y_hat, label)
+                    loss = self.criterion(y_hat, label.float())
                     loss.backward()
             if not self.optimize_inline:
                 if self.bit16:
@@ -467,7 +466,7 @@ class ClientCreator:
         return create_client(
             x,
             dbname=self.dbname,
-            colname=f"{self.collection}.bin",
+            colname=self.collection,
             mongohost=self.mongohost,
         )
 
@@ -536,35 +535,6 @@ def main(cfg: DictConfig):
     # MongoDB parameters
     validation_percent = cfg.mongo.validation_percent
 
-    #######################################################
-    # ADD CONNECTION TEST HERE (right after db_host setup)
-    #######################################################
-    try:
-        print("\nVerifying MongoDB connection...")
-        test_client = MongoClient(
-            f"mongodb://{db_host}:27017",
-            serverSelectionTimeoutMS=5000,
-            socketTimeoutMS=10000
-        )
-        test_client.admin.command('ping')
-        db = test_client["multimodalSubnetworks"]
-        
-        # Check both possible collection names
-        target_collections = ["fbirn_falff.bin", "fbirn_falff"]
-        found_collections = [col for col in target_collections if col in db.list_collection_names()]
-        
-        if not found_collections:
-            raise ValueError(f"Neither fbirn_falff nor fbirn_falff.bin found in database")
-        
-        print(f"Verified connection to MongoDB at {db_host}")
-        print(f"Found collections: {found_collections}")
-        print(f"Document count: {db[found_collections[0]].count_documents({})}")
-        test_client.close()
-    except Exception as e:
-        print(f"\nMongoDB connection failed: {str(e)}")
-        print("Available collections:", db.list_collection_names())
-        raise
-    #######################################################
 
     wandb_project = cfg.wandb.project
 
@@ -589,9 +559,7 @@ def main(cfg: DictConfig):
     epochs = eval(cfg.experiment.epochs_code, globals(), context)
     prefetches = eval(cfg.experiment.prefetches_code, globals(), context)
     attenuates = eval(cfg.experiment.attenuates_code, globals(), context)
-    #collections = eval(cfg.experiment.collections_code, globals(), context)
-    #collections = [col if col.endswith('.bin') else f"{col}.bin" for col in collections]
-    
+
     assert_equal_length(
         cubesizes,
         numcubes,
@@ -679,3 +647,4 @@ def main(cfg: DictConfig):
 
 if __name__ == "__main__":
     main()
+

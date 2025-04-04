@@ -17,7 +17,7 @@ MONGOHOST = "10.245.12.58"
 MONGODB = "multimodalSubnetworks"
 BASE_PATH = "/data/users2/jwardell1/multimodal-subnetworks/groupedData"
 CHUNK_SIZE = 10  # MB
-DEMOGRAPHICS_FILE = 'FBIRN_PANSS_Details.xlsx'
+DEMOGRAPHICS_FILE = "/data/users2/jwardell1/multimodal-subnetworks/prep/" + 'FBIRN_PANSS_Details.xlsx'
 
 # Initialize MongoDB Connection
 print(f"\nConnecting to MongoDB at {MONGOHOST}...")
@@ -178,10 +178,9 @@ def process_subject(image_path, collection_name, id):
         
         # Insert binary data
         gender_value = gender_data['encoded']  # From your existing code
-        gender_tensor = torch.tensor([gender_value], dtype=torch.long)  # Wrap in list to make 1D
-        gender_binary = gender_tensor.numpy().tobytes()
-
-        gender_chunks = list(chunk_binobj(gender_binary, id, "gender", CHUNK_SIZE))
+        gender_bin = tensor2bin(torch.tensor([gender_value], dtype=torch.long))  # Wrap in list to make 1D
+        
+        gender_chunks = list(chunk_binobj(gender_bin, id, "gender", CHUNK_SIZE))
         img_chunks = list(chunk_binobj(img_bin, id, "image", CHUNK_SIZE))   
         print(f"Inserting {len(img_chunks)} binary chunks...")
         bin_result = col_bin.insert_many(img_chunks + gender_chunks)
@@ -236,3 +235,4 @@ if __name__ == "__main__":
     print("Final checks:")
     print(f"Metadata documents: {db['fbirn_falff.meta'].count_documents({})}")
     print(f"Binary chunks: {db['fbirn_falff.bin'].count_documents({})}")
+

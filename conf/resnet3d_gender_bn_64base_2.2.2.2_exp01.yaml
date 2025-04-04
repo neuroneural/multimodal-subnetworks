@@ -11,8 +11,11 @@ mongo:
   validation_percent: 0.2
 
 wandb:
-  team: "neuro-imaging-mmsn"  # Your specified team name
-  project: "multimodal-subnetworks"  # Your requested project name
+        team: "neuro-imaging-mmsn"  # Your specified team name
+        project: "multimodal-subnetworks"  # Your requested project name
+
+  #team: "neuroneural"  # Your specified team name
+  #project: "testing_with_Joanne"  # Your requested project name
 
 bit16: False
 
@@ -53,7 +56,7 @@ experiment:
   collections_code: |
     ["fbirn_falff"] * maxreps
   dbfields_code: |
-    [("bin", "gender")] * maxreps  # Consistent across collections
+    [("image", "gender")] * maxreps  # Consistent across collections
   epochs_code: |
     [10] * (maxreps-2) + [50, 100]
   prefetches_code: |
@@ -69,3 +72,4 @@ resnet_specific:
   initial_pool: True
   dropout: 0.2
   use_checkpointing: True
+
