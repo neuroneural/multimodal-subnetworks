@@ -1,0 +1,48 @@
+# Configuration for fMRI Classification Training
+
+# --- Paths ---
+data:
+  fmri_dir: '/data/users2/jwardell1/multimodal-subnetworks/groupedData/fbirn_falff/images'
+  label_map_path: '/data/users4/rohib/2025/multimodal-subnetworks/prep/filename_to_gender_map.json'
+output:
+  output_dir: './training_output_organized' # Directory to save models/logs
+
+# --- Data Loading & Preprocessing ---
+dataset:
+  target_shape: [64, 64, 64]  # Target shape [D, H, W] for resizing
+  label_map: {'M': 0, 'F': 1} # Label mapping used
+  apply_quantile_norm: true 
+  apply_crop: false         
+  crop_percentile: 10       
+
+dataloader:
+  batch_size: 8
+  num_workers: 4
+  train_split_ratio: 0.8      # Ratio of data for training
+  random_seed: 104 # 42             # Seed for reproducible train/test splits & initialization
+
+# --- Model ---
+model:
+  # Options: 'resnet18', 'resnet34', etc. check model.py: RESNET_CONFIGS
+  variant: 'resnet18'
+  in_channels: 1
+  n_classes: 1                # Set to 1 for binary classification with BCEWithLogitsLoss
+  base_channels: 16           # Base number of channels for ResNet blocks
+
+# --- Training ---
+training:
+  learning_rate: 0.0001       # Adam optimizer learning rate
+  weight_decay: 0.01 # old -> 0.00001      # Optimizer weight decay (L2 regularization)
+  num_epochs: 20
+  # Loss function: BCEWithLogitsLoss is used by default for n_classes=1 in train.py
+  # Optimizer: Adam is used by default in train.py
+
+# --- Logging & Saving ---
+logging:
+  print_freq: 20             # Print loss every N batches
+saving:
+  save_freq: 5                # Save checkpoint every N epochs
+
+# --- Device ---
+# Options: "cuda", "cpu", "auto" (auto selects cuda if available)
+device: "auto"
