@@ -139,7 +139,9 @@ def process_subject(image_path, collection_name, id):
         
         if not gender_data:
             available_ids = list(gender_mapping.keys())[:5]
+            print(f'\n\n\n\n\t\t\tfile_id')
             raise ValueError(f"No gender match. Tried: {file_id}, {clean_id}\nFirst 5 available: {available_ids}")
+            
         
         if gender_data['encoded'] not in {0, 1}:
             raise ValueError(f"Invalid gender code: {gender_data}")

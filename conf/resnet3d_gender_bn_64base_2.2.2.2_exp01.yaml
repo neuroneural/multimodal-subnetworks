@@ -41,7 +41,7 @@ client_creator:
   normalize: False  # Data already normalized
 
 experiment:
-  lr_scale: 1
+  lr_scale: 0.01
   maxreps: 9  # 3 reps per modality (3 modalities)
   cubesizes_code: |
     [256] * maxreps

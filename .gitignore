@@ -8,6 +8,7 @@ FBIRN_PANSS_Details.xlsx*
 logs/
 __pycache__
 outputs/
+outputs.bak/
 /*.ipynb
 /training_output
 /**/*.ipynb

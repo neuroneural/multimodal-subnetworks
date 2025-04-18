@@ -1,4 +1,5 @@
 import hydra
+import numpy as np
 from omegaconf import DictConfig, OmegaConf
 import os
 import random
@@ -141,6 +142,7 @@ class CustomRunner(dl.Runner):
         self.config_file = modelconfig
         self.optimize_inline = optimize_inline
         self.onecycle_lr = onecycle_lr
+        self.validation_percent = validation_percent
         self.rmsprop_lr = rmsprop_lr
         self.prefetches = prefetches
         self.db_host = db_host
@@ -210,7 +212,7 @@ class CustomRunner(dl.Runner):
     def get_loaders(self):
         self.funcs = {
             "createclient": self.client_creator.create_client,
-            "createVclient": self.client_creator.create_v_client,
+            "createVclient": self.client_creator.create_client,
             "mycollate": self.client_creator.mycollate,
             "mycollate_full": self.client_creator.mycollate_full,
             "mytransform": self.client_creator.mytransform,
@@ -231,14 +233,12 @@ class CustomRunner(dl.Runner):
             posts.find_one(sort=[(self.index_id, -1)])[self.index_id] + 1
         )
 
+        full_indices = [int(x) for x in np.random.permutation(num_examples)]
+        train_idx = full_indices[:int(1-self.validation_percent * num_examples)]
+        valid_idx = full_indices[int(1-self.validation_percent * num_examples):]
+
         tdataset = MongoDataset(
-            range(num_examples),
-            # [
-            #     int(x)
-            #     for x in np.random.permutation(
-            #         list(np.random.randint(0, num_examples, 8)) * 100
-            #     )
-            # ],
+            train_idx, 
             self.funcs["mytransform"],
             None,
             self.db_fields,
@@ -267,7 +267,7 @@ class CustomRunner(dl.Runner):
         )
 
         vdataset = MongoDataset(
-            range(32),
+            valid_idx,#take first validation_percent percent from list
             self.funcs["mytransform"],
             None,
             self.db_fields,
@@ -349,18 +349,20 @@ class CustomRunner(dl.Runner):
         super().on_loader_start(runner)
         self.meters = {
             key: metrics.AdditiveValueMetric(compute_on_call=False)
-            for key in ["loss", "accuracy"]
+            for key in ["loss", "accuracy", "learning rate"]
         }
 
     def on_loader_end(self, runner):
-        for key in ["loss", "accuracy"]:
+        for key in ["loss", "accuracy", "learning rate"]:
             self.loader_metrics[key] = self.meters[key].compute()[0]
         super().on_loader_end(runner)
 
 
 
     # model train/valid step
+    # model train/valid step
     def handle_batch(self, batch):
+
         # Add synchronization before processing
         if self.engine.is_ddp:
             torch.cuda.synchronize()
@@ -371,54 +373,26 @@ class CustomRunner(dl.Runner):
         # stop
         # run model forward/backward pass
         if self.model.training:
-            if self.shape > self.maxshape:
-                if self.engine.is_ddp:
-                    with self.model.no_sync():
-                        loss, y_hat = self.model.forward(
-                            x=sample,
-                            y=label,
-                            loss=self.criterion,
-                            verbose=False,
-                        )
-                    torch.distributed.barrier()
-                else:
-                    loss, y_hat = self.model.forward(
-                        x=sample, y=label, loss=self.criterion, verbose=False
-                    )
-            else:
-                if self.bit16:
-                    with torch.amp.autocast(
-                        device_type="cuda", dtype=torch.float16
-                    ):
-                        y_hat = self.model.forward(sample)
-                        # print("y_hat.shape: ", y_hat.shape)
-                        # print("label.shape: ", label.shape)
-                        # stop
-
-                        loss = self.criterion(y_hat, label.float())
-                    scaler.scale(loss).backward()
-                else:
+            if self.bit16:
+                with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
                     y_hat = self.model.forward(sample)
                     loss = self.criterion(y_hat, label.float())
-                    loss.backward()
-            if not self.optimize_inline:
-                if self.bit16:
-                    scaler.step(self.optimizer)
-                    self.scheduler.step()
-                    scaler.update()
-                    self.optimizer.zero_grad()
-                else:
-                    self.optimizer.step()
-                    self.scheduler.step()
-                    self.optimizer.zero_grad()
+                scaler.scale(loss).backward()
+                scaler.step(self.optimizer)
+                self.scheduler.step()
+                scaler.update()
+                self.optimizer.zero_grad()
+            else:
+                y_hat = self.model.forward(sample)
+                loss = self.criterion(y_hat, label.float())
+                loss.backward()
+                self.optimizer.step()
+                self.scheduler.step()
+                self.optimizer.zero_grad()
         else:
             with torch.no_grad():
                 y_hat = self.model.forward(sample)
-                loss = self.criterion(y_hat, label)
-        with torch.inference_mode():
-            result = torch.squeeze(torch.argmax(y_hat, 1)).long()
-            labels = torch.squeeze(label)
-
+                loss = self.criterion(y_hat, label.float())
         # Metrics calculation
         with torch.no_grad():
             preds = torch.sigmoid(y_hat) > 0.5
@@ -426,14 +400,15 @@ class CustomRunner(dl.Runner):
 
         self.batch_metrics.update({
             "loss": loss,
-            "accuracy": accuracy
+            "accuracy": accuracy, 
+            "learning rate": torch.tensor(
+                    self.optimizer.param_groups[0]["lr"]
+            )
         })
 
         del sample
         del label
         del y_hat
-        del result
-        del labels
         del loss
 
 
@@ -577,7 +552,7 @@ def main(cfg: DictConfig):
         subvolume_shape = [cubesizes[experiment]] * 3
         onecycle_lr = rmsprop_lr = (
             attenuates[experiment] ** experiment
-            * 8
+            * 1
             * cfg.experiment.lr_scale
             * numcubes[experiment]
             * numvolumes[experiment]
@@ -647,4 +622,3 @@ def main(cfg: DictConfig):
 
 if __name__ == "__main__":
     main()
-
