@@ -8,3 +8,4 @@ FBIRN_PANSS_Details.xlsx*
 logs/
 __pycache__
 outputs/
+outputs.bak/

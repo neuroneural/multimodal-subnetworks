@@ -155,7 +155,7 @@ class ResNet3D(nn.Module):
         
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
-        x = torch.sigmoid(self.fc(x))
+        x = self.fc(x)
         return x
 
 class enMesh_checkpoint(ResNet3D):

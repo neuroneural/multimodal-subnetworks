@@ -1,4 +1,5 @@
 import hydra
+import numpy as np
 from omegaconf import DictConfig, OmegaConf
 import os
 import random
@@ -141,6 +142,7 @@ class CustomRunner(dl.Runner):
         self.config_file = modelconfig
         self.optimize_inline = optimize_inline
         self.onecycle_lr = onecycle_lr
+        self.validation_percent = validation_percent
         self.rmsprop_lr = rmsprop_lr
         self.prefetches = prefetches
         self.db_host = db_host
@@ -210,7 +212,7 @@ class CustomRunner(dl.Runner):
     def get_loaders(self):
         self.funcs = {
             "createclient": self.client_creator.create_client,
-            "createVclient": self.client_creator.create_v_client,
+            "createVclient": self.client_creator.create_client,
             "mycollate": self.client_creator.mycollate,
             "mycollate_full": self.client_creator.mycollate_full,
             "mytransform": self.client_creator.mytransform,
@@ -224,22 +226,19 @@ class CustomRunner(dl.Runner):
 
         client = MongoClient("mongodb://" + self.db_host + ":27017")
         db = client[self.db_name]
-        #posts = db[self.db_collection + ".bin"]
-        posts = db[f"{self.db_collection}.bin"]
+        posts = db[self.db_collection + ".bin"]
 
 
         num_examples = int(
             posts.find_one(sort=[(self.index_id, -1)])[self.index_id] + 1
         )
 
-        tdataset = MongoheadDataset(
-            range(num_examples),
-            # [
-            #     int(x)
-            #     for x in np.random.permutation(
-            #         list(np.random.randint(0, num_examples, 8)) * 100
-            #     )
-            # ],
+        full_indices = [int(x) for x in np.random.permutation(num_examples)]
+        train_idx = full_indices[:int(1-self.validation_percent * num_examples)]
+        valid_idx = full_indices[int(1-self.validation_percent * num_examples):]
+
+        tdataset = MongoDataset(
+            train_idx, 
             self.funcs["mytransform"],
             None,
             self.db_fields,
@@ -261,14 +260,14 @@ class CustomRunner(dl.Runner):
                 pin_memory=True,
                 worker_init_fn=self.funcs["createclient"],
                 persistent_workers=True,
-                prefetch_factor=4,
-                num_workers=4,  # self.prefetches,
+                prefetch_factor=None,#4,
+                num_workers=1#0,  # self.prefetches,
             ),
             num_prefetches=self.prefetches,
         )
 
         vdataset = MongoDataset(
-            range(32),
+            valid_idx,#take first validation_percent percent from list
             self.funcs["mytransform"],
             None,
             self.db_fields,
@@ -350,18 +349,20 @@ class CustomRunner(dl.Runner):
         super().on_loader_start(runner)
         self.meters = {
             key: metrics.AdditiveValueMetric(compute_on_call=False)
-            for key in ["loss", "accuracy"]
+            for key in ["loss", "accuracy", "learning rate"]
         }
 
     def on_loader_end(self, runner):
-        for key in ["loss", "accuracy"]:
+        for key in ["loss", "accuracy", "learning rate"]:
             self.loader_metrics[key] = self.meters[key].compute()[0]
         super().on_loader_end(runner)
 
 
 
     # model train/valid step
+    # model train/valid step
     def handle_batch(self, batch):
+
         # Add synchronization before processing
         if self.engine.is_ddp:
             torch.cuda.synchronize()
@@ -372,54 +373,26 @@ class CustomRunner(dl.Runner):
         # stop
         # run model forward/backward pass
         if self.model.training:
-            if self.shape > self.maxshape:
-                if self.engine.is_ddp:
-                    with self.model.no_sync():
-                        loss, y_hat = self.model.forward(
-                            x=sample,
-                            y=label,
-                            loss=self.criterion,
-                            verbose=False,
-                        )
-                    torch.distributed.barrier()
-                else:
-                    loss, y_hat = self.model.forward(
-                        x=sample, y=label, loss=self.criterion, verbose=False
-                    )
-            else:
-                if self.bit16:
-                    with torch.amp.autocast(
-                        device_type="cuda", dtype=torch.float16
-                    ):
-                        y_hat = self.model.forward(sample)
-                        # print("y_hat.shape: ", y_hat.shape)
-                        # print("label.shape: ", label.shape)
-                        # stop
-
-                        loss = self.criterion(y_hat, label)
-                    scaler.scale(loss).backward()
-                else:
+            if self.bit16:
+                with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
                     y_hat = self.model.forward(sample)
-                    loss = self.criterion(y_hat, label)
-                    loss.backward()
-            if not self.optimize_inline:
-                if self.bit16:
-                    scaler.step(self.optimizer)
-                    self.scheduler.step()
-                    scaler.update()
-                    self.optimizer.zero_grad()
-                else:
-                    self.optimizer.step()
-                    self.scheduler.step()
-                    self.optimizer.zero_grad()
+                    loss = self.criterion(y_hat, label.float())
+                scaler.scale(loss).backward()
+                scaler.step(self.optimizer)
+                self.scheduler.step()
+                scaler.update()
+                self.optimizer.zero_grad()
+            else:
+                y_hat = self.model.forward(sample)
+                loss = self.criterion(y_hat, label.float())
+                loss.backward()
+                self.optimizer.step()
+                self.scheduler.step()
+                self.optimizer.zero_grad()
         else:
             with torch.no_grad():
                 y_hat = self.model.forward(sample)
-                loss = self.criterion(y_hat, label)
-        with torch.inference_mode():
-            result = torch.squeeze(torch.argmax(y_hat, 1)).long()
-            labels = torch.squeeze(label)
-
+                loss = self.criterion(y_hat, label.float())
         # Metrics calculation
         with torch.no_grad():
             preds = torch.sigmoid(y_hat) > 0.5
@@ -427,14 +400,15 @@ class CustomRunner(dl.Runner):
 
         self.batch_metrics.update({
             "loss": loss,
-            "accuracy": accuracy
+            "accuracy": accuracy, 
+            "learning rate": torch.tensor(
+                    self.optimizer.param_groups[0]["lr"]
+            )
         })
 
         del sample
         del label
         del y_hat
-        del result
-        del labels
         del loss
 
 
@@ -467,7 +441,7 @@ class ClientCreator:
         return create_client(
             x,
             dbname=self.dbname,
-            colname=f"{self.collection}.bin",
+            colname=self.collection,
             mongohost=self.mongohost,
         )
 
@@ -536,35 +510,6 @@ def main(cfg: DictConfig):
     # MongoDB parameters
     validation_percent = cfg.mongo.validation_percent
 
-    #######################################################
-    # ADD CONNECTION TEST HERE (right after db_host setup)
-    #######################################################
-    try:
-        print("\nVerifying MongoDB connection...")
-        test_client = MongoClient(
-            f"mongodb://{db_host}:27017",
-            serverSelectionTimeoutMS=5000,
-            socketTimeoutMS=10000
-        )
-        test_client.admin.command('ping')
-        db = test_client["multimodalSubnetworks"]
-        
-        # Check both possible collection names
-        target_collections = ["fbirn_falff.bin", "fbirn_falff"]
-        found_collections = [col for col in target_collections if col in db.list_collection_names()]
-        
-        if not found_collections:
-            raise ValueError(f"Neither fbirn_falff nor fbirn_falff.bin found in database")
-        
-        print(f"Verified connection to MongoDB at {db_host}")
-        print(f"Found collections: {found_collections}")
-        print(f"Document count: {db[found_collections[0]].count_documents({})}")
-        test_client.close()
-    except Exception as e:
-        print(f"\nMongoDB connection failed: {str(e)}")
-        print("Available collections:", db.list_collection_names())
-        raise
-    #######################################################
 
     wandb_project = cfg.wandb.project
 
@@ -589,9 +534,7 @@ def main(cfg: DictConfig):
     epochs = eval(cfg.experiment.epochs_code, globals(), context)
     prefetches = eval(cfg.experiment.prefetches_code, globals(), context)
     attenuates = eval(cfg.experiment.attenuates_code, globals(), context)
-    #collections = eval(cfg.experiment.collections_code, globals(), context)
-    #collections = [col if col.endswith('.bin') else f"{col}.bin" for col in collections]
-    
+
     assert_equal_length(
         cubesizes,
         numcubes,
@@ -609,7 +552,7 @@ def main(cfg: DictConfig):
         subvolume_shape = [cubesizes[experiment]] * 3
         onecycle_lr = rmsprop_lr = (
             attenuates[experiment] ** experiment
-            * 8
+            * 1
             * cfg.experiment.lr_scale
             * numcubes[experiment]
             * numvolumes[experiment]
