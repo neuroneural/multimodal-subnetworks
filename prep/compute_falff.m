@@ -1,13 +1,13 @@
 function compute_falff(dataset)
     % MATLAB script to compute fALFF for all subjects in a dataset
-    % Usage: compute_falff('fbirn') % Replace 'fbirn' with your dataset name
+    % Usage: compute_falff('dataset_name') % Replace with your dataset name
 
     % Add REST toolbox to MATLAB path
     addpath(genpath('REST_V1.8_130615')); % Ensure REST toolbox is in your PWD
 
     % Define base directories
     base_dir = '/data/users2/jwardell1/nshor_docker/examples';
-    output_dir = '/data/users2/jwardell1/multimodal-subnetworks/groupedData/fbirn_falff/images';
+    output_dir = fullfile('/data/users2/jwardell1/multimodal-subnetworks/groupedData', [lower(dataset) '_falff'], 'images');
 
     % Define dataset-specific paths
     dataset_lower = lower(dataset); % Convert dataset name to lowercase

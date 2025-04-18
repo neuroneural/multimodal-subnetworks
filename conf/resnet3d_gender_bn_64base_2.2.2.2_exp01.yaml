@@ -72,3 +72,4 @@ resnet_specific:
   initial_pool: True
   dropout: 0.2
   use_checkpointing: True
+

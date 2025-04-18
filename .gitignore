@@ -9,3 +9,7 @@ logs/
 __pycache__
 outputs/
 outputs.bak/
+/*.ipynb
+/training_output
+/**/*.ipynb
+/**/training_output_organized

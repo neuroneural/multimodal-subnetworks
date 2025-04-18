@@ -237,3 +237,4 @@ if __name__ == "__main__":
     print("Final checks:")
     print(f"Metadata documents: {db['fbirn_falff.meta'].count_documents({})}")
     print(f"Binary chunks: {db['fbirn_falff.bin'].count_documents({})}")
+
