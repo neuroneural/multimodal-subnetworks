@@ -11,8 +11,8 @@ mongo:
   validation_percent: 0.2
 
 wandb:
-        team: "pavalipopov"  # Your specified team name
-        project: "multimodal-subnetworks-rev"  # Your requested project name
+        team: "neuro-imaging-mmsn"  # Your specified team name
+        project: "multimodal-subnetworks"  # Your requested project name
 
   #team: "neuroneural"  # Your specified team name
   #project: "testing_with_Joanne"  # Your requested project name
