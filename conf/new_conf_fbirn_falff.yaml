@@ -8,11 +8,12 @@ mongo:
   index_id: "id"
   labelfield: "gender.encoded"  # Using encoded gender (0: Male, 1: Female)
   datafield: "bin"  # Points to .bin collections
+  cv_folds: 10
   validation_percent: 0.2
 
 wandb:
-        team: "pavalipopov"  # Your specified team name
-        project: "multimodal-subnetworks-rev"  # Your requested project name
+  team: "pavalipopov"  # Your specified team name
+  project: "multimodal-subnetworks-rev"  # Your requested project name
 
   #team: "neuroneural"  # Your specified team name
   #project: "testing_with_Joanne"  # Your requested project name
@@ -33,8 +34,8 @@ model:
 
 paths:
   loadcheckpoint: False
-  model: "./logs/tmp/resnet3d_gender/model.last.pth"
-  logdir: "./logs/tmp/resnet3d_gender/"
+  model: "../logs/tmp/new_test_fbirn_falff/model.last.pth"
+  logdir: "./logs/tmp/new_test_fbirn_falff/"
 
 client_creator:
   crop_tensor: False
@@ -43,26 +44,16 @@ client_creator:
 experiment:
   lr_scale: 0.01
   maxreps: 9  # 3 reps per modality (3 modalities)
-  cubesizes_code: |
-    [256] * maxreps
-  numcubes_code: |
-    [1] * maxreps
-  numvolumes_code: |
-    [2] * maxreps  # Reduced batch size for 3D
-  weights_code: |
-    [1] * maxreps
-  databases_code: |
-    ["multimodalSubnetworks"] * maxreps
-  collections_code: |
-    ["fbirn_falff"] * maxreps
-  dbfields_code: |
-    [("image", "gender")] * maxreps  # Consistent across collections
-  epochs_code: |
-    [10] * (maxreps-2) + [50, 100]
-  prefetches_code: |
-    [16] * maxreps  # Reduced prefetch for memory
-  attenuates_code: |
-    [0.8] * maxreps
+  cubesizes_code: 256
+  numcubes_code: 1
+  numvolumes_code: 2
+  weights_code: 1
+  databases_code: "multimodalSubnetworks"
+  collections_code: "fbirn_falff"
+  dbfields_code: ["image", "gender"]
+  epochs_code: 60
+  prefetches_code: 16
+  attenuates_code: 0.8
 
 resnet_specific:
   block_type: "basic"
