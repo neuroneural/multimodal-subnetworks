@@ -295,10 +295,14 @@ class CustomRunner(dl.Runner):
             key: metrics.AdditiveValueMetric(compute_on_call=False)
             for key in ["loss", "accuracy", "learning rate"]
         }
+        self.meters["auc"] = metrics.AUCMetric(
+            compute_on_call=False
+        )
 
     def on_loader_end(self, runner):
         for key in ["loss", "accuracy", "learning rate"]:
             self.loader_metrics[key] = self.meters[key].compute()[0]
+        self.loader_metrics["auc"] = self.meters["auc"].compute()[2]
 
         super().on_loader_end(runner)
 
@@ -336,8 +340,10 @@ class CustomRunner(dl.Runner):
 
         # Metrics calculation
         with torch.no_grad():
-            preds = torch.sigmoid(y_hat) > 0.5
+            proba_preds = torch.sigmoid(y_hat)
+            preds = proba_preds > 0.5
             accuracy = (preds == label).float().mean()
+
 
         self.batch_metrics.update({
             "loss": loss,
@@ -350,6 +356,7 @@ class CustomRunner(dl.Runner):
             self.meters[key].update(
                 self.batch_metrics[key].item(), self.batch_size
             )
+        self.meters["auc"].update(proba_preds, label)
 
         del sample
         del label

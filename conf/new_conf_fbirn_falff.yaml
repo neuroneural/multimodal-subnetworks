@@ -34,8 +34,8 @@ model:
 
 paths:
   loadcheckpoint: False
-  model: "../logs/tmp/new_test_fbirn_falff/model.last.pth"
-  logdir: "./logs/tmp/new_test"
+  model: "../logs/new_test_fbirn_falff/model.last.pth"
+  logdir: "./logs/new_test_fbirn_falff"
 
 client_creator:
   crop_tensor: False
