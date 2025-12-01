@@ -1,7 +1,6 @@
 from mindfultensors.gencoords import CoordsGenerator
 from mindfultensors.utils import unit_interval_normalize, DBBatchSampler
 
-
 from mindfultensors.mongoloader import (
     create_client,
     collate_subcubes,
@@ -11,8 +10,34 @@ from mindfultensors.mongoloader import (
     MongoheadDataset,
     mtransform,
 )
+import torch
 
-from src.utils import crop_tensor
+def crop_tensor(tensor, label, percentile=10):
+
+    # Use torch.quantile instead of kthvalue for potentially faster operation
+    threshold = torch.quantile(tensor.flatten(), percentile / 100)
+
+    # Create a mask on the original device
+    mask = tensor > threshold
+
+    # If the mask is all False, return the original tensors
+    if not torch.any(mask):
+        return tensor, label
+
+    # Find the bounding box (this part is already efficient)
+    nonzero = torch.nonzero(mask)
+    min_coords, _ = torch.min(nonzero, dim=0)
+    max_coords, _ = torch.max(nonzero, dim=0)
+
+    # Crop the original tensor and label using the bounding box
+    slices = tuple(
+        slice(min_coord.item(), max_coord.item() + 1)
+        for min_coord, max_coord in zip(min_coords[2:], max_coords[2:])
+    )
+    cropped_tensor = tensor[(slice(None), slice(None)) + slices]
+    cropped_label = label[(slice(None),) + slices]
+
+    return cropped_tensor, cropped_label
 
 class ClientCreator:
     def __init__(self, mongohost, volume_shape=[256] * 3, crop_tensor=False):

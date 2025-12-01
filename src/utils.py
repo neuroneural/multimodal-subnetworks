@@ -8,34 +8,6 @@ def qnormalize(img, qmin=0.02, qmax=0.98):
     img = torch.clamp(img, 0, 1)  # Clip the values to be between 0 and 1
     return img
 
-
-def crop_tensor(tensor, label, percentile=10):
-
-    # Use torch.quantile instead of kthvalue for potentially faster operation
-    threshold = torch.quantile(tensor.flatten(), percentile / 100)
-
-    # Create a mask on the original device
-    mask = tensor > threshold
-
-    # If the mask is all False, return the original tensors
-    if not torch.any(mask):
-        return tensor, label
-
-    # Find the bounding box (this part is already efficient)
-    nonzero = torch.nonzero(mask)
-    min_coords, _ = torch.min(nonzero, dim=0)
-    max_coords, _ = torch.max(nonzero, dim=0)
-
-    # Crop the original tensor and label using the bounding box
-    slices = tuple(
-        slice(min_coord.item(), max_coord.item() + 1)
-        for min_coord, max_coord in zip(min_coords[2:], max_coords[2:])
-    )
-    cropped_tensor = tensor[(slice(None), slice(None)) + slices]
-    cropped_label = label[(slice(None),) + slices]
-
-    return cropped_tensor, cropped_label
-
 class ProductScheduler:
     def __init__(self, scheduler1, scheduler2):
         self.scheduler1 = scheduler1
