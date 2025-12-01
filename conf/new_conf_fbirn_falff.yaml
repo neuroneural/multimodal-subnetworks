@@ -35,7 +35,7 @@ model:
 paths:
   loadcheckpoint: False
   model: "../logs/tmp/new_test_fbirn_falff/model.last.pth"
-  logdir: "./logs/tmp/new_test_fbirn_falff/"
+  logdir: "./logs/tmp/new_test"
 
 client_creator:
   crop_tensor: False
@@ -43,17 +43,16 @@ client_creator:
 
 experiment:
   lr_scale: 0.01
-  maxreps: 9  # 3 reps per modality (3 modalities)
-  cubesizes_code: 256
-  numcubes_code: 1
-  numvolumes_code: 2
-  weights_code: 1
-  databases_code: "multimodalSubnetworks"
-  collections_code: "fbirn_falff"
-  dbfields_code: ["image", "gender"]
-  epochs_code: 60
-  prefetches_code: 16
-  attenuates_code: 0.8
+  cubesizes: 256
+  numcubes: 1
+  numvolumes: 2
+  weights: 1
+  databases: "multimodalSubnetworks"
+  collections: "fbirn_falff"
+  dbfields: ["image", "gender"]
+  epochs: 60
+  prefetches: 16
+  attenuates: 0.8
 
 resnet_specific:
   block_type: "basic"

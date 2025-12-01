@@ -1,3 +1,6 @@
+import warnings
+warnings.filterwarnings("ignore")
+
 import hydra
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
@@ -6,6 +9,7 @@ import random
 import shutil
 from packaging import version
 import yaml
+
 from catalyst import dl, metrics, utils
 from catalyst.data import BatchPrefetchLoaderWrapper
 
@@ -15,18 +19,9 @@ from torch.utils.data import DataLoader
 
 from resnet import ResNet3D
 
-from mindfultensors.gencoords import CoordsGenerator
+from mindfultensors.mongoloader import MongoDataset, MongoClient
 from mindfultensors.utils import unit_interval_normalize, DBBatchSampler
-
-from mindfultensors.mongoloader import (
-    create_client,
-    collate_subcubes,
-    mcollate,
-    MongoDataset,
-    MongoClient,
-    MongoheadDataset,
-    mtransform,
-)
+from src.db_client import ClientCreator
 
 SEED = random.randint(0, 9999)
 utils.set_global_seed(SEED)
@@ -41,60 +36,6 @@ if version.parse(torch_version) >= version.parse("2.3"):
     scaler = torch.amp.GradScaler()
 else:
     scaler = torch.cuda.amp.GradScaler()
-
-
-def qnormalize(img, qmin=0.02, qmax=0.98):
-    """Unit interval preprocessing with clipping"""
-    qlow = torch.quantile(img, qmin)
-    qhigh = torch.quantile(img, qmax)
-    img = (img - qlow) / (qhigh - qlow)
-    img = torch.clamp(img, 0, 1)  # Clip the values to be between 0 and 1
-    return img
-
-
-def crop_tensor(tensor, label, percentile=10):
-
-    # Use torch.quantile instead of kthvalue for potentially faster operation
-    threshold = torch.quantile(tensor.flatten(), percentile / 100)
-
-    # Create a mask on the original device
-    mask = tensor > threshold
-
-    # If the mask is all False, return the original tensors
-    if not torch.any(mask):
-        return tensor, label
-
-    # Find the bounding box (this part is already efficient)
-    nonzero = torch.nonzero(mask)
-    min_coords, _ = torch.min(nonzero, dim=0)
-    max_coords, _ = torch.max(nonzero, dim=0)
-
-    # Crop the original tensor and label using the bounding box
-    slices = tuple(
-        slice(min_coord.item(), max_coord.item() + 1)
-        for min_coord, max_coord in zip(min_coords[2:], max_coords[2:])
-    )
-    cropped_tensor = tensor[(slice(None), slice(None)) + slices]
-    cropped_label = label[(slice(None),) + slices]
-
-    return cropped_tensor, cropped_label
-
-
-class ProductScheduler:
-    def __init__(self, scheduler1, scheduler2):
-        self.scheduler1 = scheduler1
-        self.scheduler2 = scheduler2
-        self.initial_lr = scheduler1.optimizer.param_groups[0]["lr"]
-
-    def step(self):
-        lr1 = self.scheduler1.get_last_lr()[0]
-        lr2 = self.scheduler2.get_last_lr()[0]
-        combined_lr = lr1 * lr2
-        self.scheduler1.step()
-        self.scheduler2.step()
-        self.scheduler1.optimizer.param_groups[0]["lr"] = combined_lr
-        return combined_lr
-
 
 # CustomRunner – PyTorch for-loop decomposition
 # https://github.com/catalyst-team/catalyst#minimal-examples
@@ -259,8 +200,10 @@ class CustomRunner(dl.Runner):
                 pin_memory=True,
                 worker_init_fn=self.funcs["createclient"],
                 persistent_workers=True,
-                prefetch_factor=4,
+                prefetch_factor=2,
                 num_workers=4,  # self.prefetches,
+                # prefetch_factor=None,
+                # num_workers=1,  # self.prefetches,
             ),
             num_prefetches=self.prefetches,
         )
@@ -290,6 +233,8 @@ class CustomRunner(dl.Runner):
                 pin_memory=True,
                 worker_init_fn=self.funcs["createVclient"],
                 persistent_workers=True,
+                # prefetch_factor=4,
+                # num_workers=4,  # self.prefetches,
                 prefetch_factor=2,
                 num_workers=4,  # self.prefetches,
             ),
@@ -354,11 +299,9 @@ class CustomRunner(dl.Runner):
     def on_loader_end(self, runner):
         for key in ["loss", "accuracy", "learning rate"]:
             self.loader_metrics[key] = self.meters[key].compute()[0]
+
         super().on_loader_end(runner)
 
-
-
-    # model train/valid step
     # model train/valid step
     def handle_batch(self, batch):
 
@@ -367,9 +310,7 @@ class CustomRunner(dl.Runner):
             torch.cuda.synchronize()
         
         sample, label = batch
-        # np.save("labels.npy", label.cpu().numpy())
-        # np.save("input.npy", sample.cpu().numpy())
-        # stop
+
         # run model forward/backward pass
         if self.model.training:
             if self.bit16:
@@ -392,6 +333,7 @@ class CustomRunner(dl.Runner):
             with torch.no_grad():
                 y_hat = self.model.forward(sample)
                 loss = self.criterion(y_hat, label.float())
+
         # Metrics calculation
         with torch.no_grad():
             preds = torch.sigmoid(y_hat) > 0.5
@@ -404,6 +346,10 @@ class CustomRunner(dl.Runner):
                     self.optimizer.param_groups[0]["lr"]
             )
         })
+        for key in self.batch_metrics:
+            self.meters[key].update(
+                self.batch_metrics[key].item(), self.batch_size
+            )
 
         del sample
         del label
@@ -411,99 +357,17 @@ class CustomRunner(dl.Runner):
         del loss
 
 
-class ClientCreator:
-    def __init__(self, mongohost, volume_shape=[256] * 3, crop_tensor=False):
-        self.mongohost = mongohost
-        self.volume_shape = volume_shape
-        self.subvolume_shape = None
-        self.dbname = None
-        self.collection = None
-        self.num_subcubes = None
-        self.crop_tensor = crop_tensor
-
-    def set_shape(self, shape):
-        self.subvolume_shape = shape
-        self.coord_generator = CoordsGenerator(
-            self.volume_shape, self.subvolume_shape
-        )
-
-    def set_collection(self, collection):
-        self.collection = collection
-
-    def set_database(self, database):
-        self.dbname = database
-
-    def set_num_subcubes(self, num_subcubes):
-        self.num_subcubes = num_subcubes
-
-    def create_client(self, x):
-        return create_client(
-            x,
-            dbname=self.dbname,
-            colname=self.collection,
-            mongohost=self.mongohost,
-        )
-
-    def create_v_client(self, x):
-        return create_client(
-            x,
-            dbname="multimodalSubnetworks",
-            colname="fbirn_falff.bin",
-            mongohost=self.mongohost,
-        )
-
-    def mycollate(self, x):
-        return collate_subcubes(
-            x,
-            self.coord_generator,
-            samples=self.num_subcubes,
-        )
-
-    def mycollate_full(self, x):
-        return crop_tensor(*mcollate(x)) if self.crop_tensor else mcollate(x)
-
-    def mytransform(self, x):
-        return mtransform(x)
-
-
-def assert_equal_length(*args):
-    """Enhanced version that shows which parameters have mismatched lengths"""
-    if not all(len(arg) == len(args[0]) for arg in args):
-        print("\nParameter length mismatch detected:")
-        print("{:<15} {:<10}".format("Parameter", "Length"))
-        print("-" * 25)
-        param_names = [
-            "cubesizes", "numcubes", "numvolumes", "weights",
-            "databases", "collections", "epochs", 
-            "prefetches", "attenuates"
-        ]
-        for name, arg in zip(param_names, args):
-            print("{:<15} {:<10}".format(name, len(arg)))
-        print()
-        
-        # Show first few elements of each list for comparison
-        print("First few elements of each list:")
-        for name, arg in zip(param_names, args):
-            print(f"{name}: {arg[:3]}...")
-        print()
-        
-        raise AssertionError("Not all parameter lists have the same length!")
-
-
 
 @hydra.main(config_path="conf", config_name="new_conf_fbirn_falff", version_base=None)
 def main(cfg: DictConfig):
     # Loading common parameters
     # Model parameters
-    volume_shape = cfg.model.volume_shape
     n_classes = cfg.model.n_classes
     config_file = cfg.model.config_file
     optimize_inline = cfg.model.optimize_inline
     model_channels = cfg.model.model_channels
-    model_label = cfg.model.model_label
     use_groupnorm = cfg.model.use_groupnorm
     model_path = cfg.paths.model if cfg.paths.loadcheckpoint else ""
-    logdir = cfg.paths.logdir
     db_host = cfg.mongo.host_slurm if os.environ.get("SLURM_JOB_ID") else cfg.mongo.host
 
     validation_percent = cfg.mongo.validation_percent
@@ -514,106 +378,81 @@ def main(cfg: DictConfig):
         db_host, crop_tensor=cfg.client_creator.crop_tensor
     )
 
-    # Specify curriculum parameters
-    # Set up the environment for eval
-    context = {"maxreps": cfg.experiment.maxreps}
-
     # Evaluate the Python code from the YAML config
-    cubesizes = eval(cfg.experiment.cubesizes_code, globals(), context)
-    numcubes = eval(cfg.experiment.numcubes_code, globals(), context)
-    numvolumes = eval(cfg.experiment.numvolumes_code, globals(), context)
-    weights = eval(cfg.experiment.weights_code, globals(), context)
-    databases = eval(cfg.experiment.databases_code, globals(), context)
-    collections = eval(cfg.experiment.collections_code, globals(), context)
-    dbfields = eval(cfg.experiment.dbfields_code, globals(), context)
-    epochs = eval(cfg.experiment.epochs_code, globals(), context)
-    prefetches = eval(cfg.experiment.prefetches_code, globals(), context)
-    attenuates = eval(cfg.experiment.attenuates_code, globals(), context)
+    cubesizes = cfg.experiment.cubesizes
+    numcubes = cfg.experiment.numcubes
+    numvolumes = cfg.experiment.numvolumes
+    weights = cfg.experiment.weights
+    databases = cfg.experiment.databases
+    collections = cfg.experiment.collections
+    # dbfields = [tuple(fields) for fields in cfg.experiment.dbfields]  # Convert to tuples
+    dbfields = tuple(cfg.experiment.dbfields)
+    epochs = cfg.experiment.epochs
+    prefetches = cfg.experiment.prefetches
+    attenuates = cfg.experiment.attenuates
 
-    assert_equal_length(
-        cubesizes,
-        numcubes,
-        numvolumes,
-        weights,
-        databases,
-        collections,
-        epochs,
-        prefetches,
-        attenuates,
+    # we need oneCycleLR, but not the rest of the curiculum
+    subvolume_shape = [cubesizes] * 3
+    onecycle_lr = rmsprop_lr = (
+        attenuates # this comes from 0.8/0.2 training? what is this input for oneCycleLR? TODO: trace it further
+        * 1
+        * cfg.experiment.lr_scale
+        * numcubes
+        * numvolumes
+        / 256
+    )
+    wandb_experiment = (
+        f"collection {collections}, dbfields {dbfields}"
     )
 
-    start_experiment = 0
-    for experiment in range(len(cubesizes)):
-        # we need oneCycleLR, but not the rest of the curiculum
-        subvolume_shape = [cubesizes[experiment]] * 3
-        onecycle_lr = rmsprop_lr = (
-            attenuates[experiment] ** experiment
-            * 1
-            * cfg.experiment.lr_scale
-            * numcubes[experiment]
-            * numvolumes[experiment]
-            / 256
-        )
-        wandb_experiment = (
-            f"{start_experiment + experiment:02} cube "
-            + str(subvolume_shape[0])
-            + " "
-            + collections[experiment]
-            + model_label
-        )
+    # Set database parameters
+    client_creator.set_database(databases)
+    client_creator.set_collection(collections)
+    client_creator.set_num_subcubes(numcubes)
+    client_creator.set_shape(subvolume_shape)
 
-        # Set database parameters
-        client_creator.set_database(databases[experiment])
-        client_creator.set_collection(collections[experiment])
-        client_creator.set_num_subcubes(numcubes[experiment])
-        client_creator.set_shape(subvolume_shape)
+    # paths:
+    #     loadcheckpoint: False
+    #     model: "../logs/tmp/new_test_fbirn_falff/model.last.pth"
+    #     logdir: "./logs/tmp/new_test_fbirn_falff/"
+    logdir = cfg.paths.logdir
+    logdir = f"{logdir}_{collections}_{dbfields}"
+    os.makedirs(logdir, exist_ok=True)
 
-        with open(cfg.model.config_file, 'r') as f:
-            config_dict = yaml.safe_load(f)
-            hparams = {"model_arch": config_dict, **OmegaConf.to_container(cfg)}
-
-        runner = CustomRunner(
-            logdir=logdir, # this is self._logdir
-            wandb_project=wandb_project,
-            wandb_experiment=wandb_experiment,
-            model_path=model_path,
-            n_channels=model_channels,
-            n_classes=n_classes,
-            modelconfig=config_file,
-            n_epochs=epochs[experiment],
-            optimize_inline=optimize_inline,
-            validation_percent=validation_percent,
-            onecycle_lr=onecycle_lr,
-            rmsprop_lr=rmsprop_lr,
-            num_subcubes=numcubes[experiment],
-            num_volumes=numvolumes[experiment],
-            groupnorm=use_groupnorm,
-            client_creator=client_creator,
-            off_brain_weight=weights[experiment],
-            prefetches=prefetches[experiment],
-            indexid=cfg.mongo.index_id,
-            db_collection=collections[experiment],
-            db_name=databases[experiment],
-            db_fields=dbfields[experiment],
-            subvolume_shape=subvolume_shape,
-            lowprecision=bit16,
-            lossweight = [w / sum(cfg.model.loss_weight) for w in cfg.model.loss_weight] if sum(cfg.model.loss_weight) != 0 else ValueError("The sum of loss weights cannot be zero."),
-            db_host=db_host,
-            wandb_team=cfg.wandb.team,
-            maxshape=cfg.model.maxshape,
-            hparams=hparams,
-        )
-        runner.run()
-
-        shutil.copy(
-            logdir + "/model.last.pth",
-            logdir
-            + "/model.last."
-            + str(subvolume_shape[0])
-            + f".run{experiment:02}.curriculum.pth",
-        )
-
-        model_path = logdir + "model.last.pth"
+    # Set hparams 
+    hparams = OmegaConf.to_container(cfg, resolve=True)
+    runner = CustomRunner(
+        logdir=logdir, # this is self._logdir
+        wandb_project=wandb_project,
+        wandb_experiment=wandb_experiment,
+        model_path=model_path,
+        n_channels=model_channels,
+        n_classes=n_classes,
+        modelconfig=config_file,
+        n_epochs=epochs,
+        optimize_inline=optimize_inline,
+        validation_percent=validation_percent,
+        onecycle_lr=onecycle_lr,
+        rmsprop_lr=rmsprop_lr,
+        num_subcubes=numcubes,
+        num_volumes=numvolumes,
+        groupnorm=use_groupnorm,
+        client_creator=client_creator,
+        off_brain_weight=weights,
+        prefetches=prefetches,
+        indexid=cfg.mongo.index_id,
+        db_collection=collections,
+        db_name=databases,
+        db_fields=dbfields,
+        subvolume_shape=subvolume_shape,
+        lowprecision=bit16,
+        lossweight = [w / sum(cfg.model.loss_weight) for w in cfg.model.loss_weight] if sum(cfg.model.loss_weight) != 0 else ValueError("The sum of loss weights cannot be zero."),
+        db_host=db_host,
+        wandb_team=cfg.wandb.team,
+        maxshape=cfg.model.maxshape,
+        hparams=hparams,
+    )
+    runner.run()
 
 
 if __name__ == "__main__":
