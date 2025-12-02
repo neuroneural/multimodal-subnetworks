@@ -8,7 +8,6 @@ mongo:
   index_id: "id"
   labelfield: "gender.encoded"  # Using encoded gender (0: Male, 1: Female)
   datafield: "bin"  # Points to .bin collections
-  cv_folds: 10
   validation_percent: 0.2
 
 wandb:
@@ -34,18 +33,19 @@ model:
 
 paths:
   loadcheckpoint: False
-  model: "../logs/new_test_fbirn_falff/model.last.pth"
-  logdir: "./logs/new_test_fbirn_falff"
+  model: "../logs/new_test/model.last.pth"
+  logdir: "./logs/new_test"
 
 client_creator:
   crop_tensor: False
   normalize: False  # Data already normalized
 
 experiment:
+  cv_folds: 10
   lr_scale: 0.01
   cubesizes: 256
   numcubes: 1
-  numvolumes: 2
+  numvolumes: 4
   weights: 1
   databases: "multimodalSubnetworks"
   collections: "fbirn_falff"

@@ -16,7 +16,7 @@ from catalyst.data import BatchPrefetchLoaderWrapper
 import torch
 from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import DataLoader
-
+from sklearn.model_selection import StratifiedKFold, train_test_split
 from resnet import ResNet3D
 
 from mindfultensors.mongoloader import MongoDataset, MongoClient
@@ -172,12 +172,36 @@ class CustomRunner(dl.Runner):
             posts.find_one(sort=[(self.index_id, -1)])[self.index_id] + 1
         )
 
-        # update this for cross-validation
-        full_indices = [int(x) for x in np.random.permutation(num_examples)]
-        train_idx = full_indices[:int(1-self.validation_percent * num_examples)]
-        valid_idx = full_indices[int(1-self.validation_percent * num_examples):]
+        # load all labels for stratified splits
+        def load_label_for_id(collection, id_value, label_kind, id_field="id"):
+            samples = list(
+                collection.find(
+                    {id_field: id_value, "kind": label_kind},
+                    {"chunk": 1, "chunk_id": 1}
+                )
+            )
+            # Sort chunks and join
+            samples = sorted(samples, key=lambda x: x["chunk_id"])
+            binary = b"".join(s["chunk"] for s in samples)
+            # Decode using the exact same transform
+            return self.funcs["mytransform"](binary)
+        labels = []
+        for i in range(num_examples):
+            tensor = load_label_for_id(posts, i, self.db_fields[1], id_field=self.index_id)
+            labels.append(tensor.item())
+        labels = np.array(labels)
+    
+        # Create CV split
+        cv_folds = StratifiedKFold(n_splits=self._hparams["experiment"]["cv_folds"], shuffle=True, random_state=SEED)
+        train_idx, test_idx = list(cv_folds.split(np.zeros(num_examples), labels))[self._hparams["fold_idx"]]
+        # split train into train and validation
+        train_idx, valid_idx = train_test_split(train_idx, test_size=self.validation_percent, stratify=labels[train_idx], random_state=SEED)
+        train_idx = train_idx.tolist() # mongo stuff below works only with native python types (for batches)
+        valid_idx = valid_idx.tolist()
+        test_idx = test_idx.tolist()
 
-        tdataset = MongoDataset(
+        # Create dataloaders
+        train_dataset = MongoDataset(
             train_idx, 
             self.funcs["mytransform"],
             None,
@@ -185,17 +209,15 @@ class CustomRunner(dl.Runner):
             normalize=unit_interval_normalize,
             id=self.index_id,
         )
-
-        tsampler = (
-            DBBatchSampler(tdataset, batch_size=self.num_volumes, seed=SEED)
+        train_sampler = (
+            DBBatchSampler(train_dataset, batch_size=self.num_volumes, seed=SEED)
             if self.engine.is_ddp
-            else DBBatchSampler(tdataset, batch_size=self.num_volumes)
+            else DBBatchSampler(train_dataset, batch_size=self.num_volumes)
         )
-
-        tdataloader = BatchPrefetchLoaderWrapper(
+        train_dataloader = BatchPrefetchLoaderWrapper(
             DataLoader(
-                tdataset,
-                sampler=tsampler,
+                train_dataset,
+                sampler=train_sampler,
                 collate_fn=self.collate,
                 pin_memory=True,
                 worker_init_fn=self.funcs["createclient"],
@@ -208,7 +230,7 @@ class CustomRunner(dl.Runner):
             num_prefetches=self.prefetches,
         )
 
-        vdataset = MongoDataset(
+        valid_dataset = MongoDataset(
             valid_idx,#take first validation_percent percent from list
             self.funcs["mytransform"],
             None,
@@ -216,19 +238,17 @@ class CustomRunner(dl.Runner):
             normalize=unit_interval_normalize,
             id=self.index_id,
         )
-
-        vsampler = (
-            DBBatchSampler(vdataset, batch_size=self.num_volumes, seed=SEED)
+        valid_sampler = (
+            DBBatchSampler(valid_dataset, batch_size=self.num_volumes, seed=SEED)
             if self.engine.is_ddp
             else DBBatchSampler(
-                vdataset, batch_size=self.num_volumes, seed=SEED
+                valid_dataset, batch_size=self.num_volumes, seed=SEED
             )
         )
-
-        vdataloader = BatchPrefetchLoaderWrapper(
+        valid_dataloader = BatchPrefetchLoaderWrapper(
             DataLoader(
-                vdataset,
-                sampler=vsampler,
+                valid_dataset,
+                sampler=valid_sampler,
                 collate_fn=self.collate,
                 pin_memory=True,
                 worker_init_fn=self.funcs["createVclient"],
@@ -241,7 +261,38 @@ class CustomRunner(dl.Runner):
             num_prefetches=self.prefetches,
         )
 
-        return {"train": tdataloader, "valid": vdataloader}
+        test_dataset = MongoDataset(
+            test_idx,#take first validation_percent percent from list
+            self.funcs["mytransform"],
+            None,
+            self.db_fields,
+            normalize=unit_interval_normalize,
+            id=self.index_id,
+        )
+        test_sampler = (
+            DBBatchSampler(test_dataset, batch_size=self.num_volumes, seed=SEED)
+            if self.engine.is_ddp
+            else DBBatchSampler(
+                test_dataset, batch_size=self.num_volumes, seed=SEED
+            )
+        )
+        test_dataloader = BatchPrefetchLoaderWrapper(
+            DataLoader(
+                test_dataset,
+                sampler=test_sampler,
+                collate_fn=self.collate,
+                pin_memory=True,
+                worker_init_fn=self.funcs["createVclient"],
+                persistent_workers=True,
+                # prefetch_factor=4,
+                # num_workers=4,  # self.prefetches,
+                prefetch_factor=2,
+                num_workers=4,  # self.prefetches,
+            ),
+            num_prefetches=self.prefetches,
+        )
+
+        return {"train": train_dataloader, "valid": valid_dataloader, "infer": test_dataloader}
 
     def get_model(self):
         model = ResNet3D(
@@ -249,8 +300,8 @@ class CustomRunner(dl.Runner):
             n_classes=self.n_classes, 
             channels=self.n_channels
         )
-        if self.model_path and os.path.exists(self.model_path):
-            model.load_state_dict(torch.load(self.model_path))
+        # if self.model_path and os.path.exists(self.model_path):
+        #     model.load_state_dict(torch.load(self.model_path))
         return model
 
     def get_criterion(self):
@@ -273,6 +324,13 @@ class CustomRunner(dl.Runner):
         return scheduler
 
     def get_callbacks(self):
+        # checkpoint_params = {
+        #     # "sync": False,
+        #     "save_best": True,
+        #     "metric_key": "loss",
+        #     "loader_key": "valid",
+        #     "minimize": True,
+        # }
         checkpoint_params = {
             # "sync": False,
             "save_best": True,
@@ -428,38 +486,48 @@ def main(cfg: DictConfig):
 
     # Set hparams 
     hparams = OmegaConf.to_container(cfg, resolve=True)
-    runner = CustomRunner(
-        logdir=logdir, # this is self._logdir
-        wandb_project=wandb_project,
-        wandb_experiment=wandb_experiment,
-        model_path=model_path,
-        n_channels=model_channels,
-        n_classes=n_classes,
-        modelconfig=config_file,
-        n_epochs=epochs,
-        optimize_inline=optimize_inline,
-        validation_percent=validation_percent,
-        onecycle_lr=onecycle_lr,
-        rmsprop_lr=rmsprop_lr,
-        num_subcubes=numcubes,
-        num_volumes=numvolumes,
-        groupnorm=use_groupnorm,
-        client_creator=client_creator,
-        off_brain_weight=weights,
-        prefetches=prefetches,
-        indexid=cfg.mongo.index_id,
-        db_collection=collections,
-        db_name=databases,
-        db_fields=dbfields,
-        subvolume_shape=subvolume_shape,
-        lowprecision=bit16,
-        lossweight = [w / sum(cfg.model.loss_weight) for w in cfg.model.loss_weight] if sum(cfg.model.loss_weight) != 0 else ValueError("The sum of loss weights cannot be zero."),
-        db_host=db_host,
-        wandb_team=cfg.wandb.team,
-        maxshape=cfg.model.maxshape,
-        hparams=hparams,
-    )
-    runner.run()
+
+    # run cross-validation
+    for fold_idx in range(cfg.experiment.cv_folds):
+        print(f"Starting fold {fold_idx+1}/{cfg.experiment.cv_folds}")
+        hparams["fold_idx"] = fold_idx
+
+        logdir = cfg.paths.logdir
+        logdir = f"{logdir}_{collections}_{dbfields}/fold_{fold_idx}"
+        os.makedirs(logdir, exist_ok=True)
+
+        runner = CustomRunner(
+            logdir=logdir, # this is self._logdir
+            wandb_project=wandb_project,
+            wandb_experiment=wandb_experiment,
+            model_path=model_path,
+            n_channels=model_channels,
+            n_classes=n_classes,
+            modelconfig=config_file,
+            n_epochs=epochs,
+            optimize_inline=optimize_inline,
+            validation_percent=validation_percent,
+            onecycle_lr=onecycle_lr,
+            rmsprop_lr=rmsprop_lr,
+            num_subcubes=numcubes,
+            num_volumes=numvolumes,
+            groupnorm=use_groupnorm,
+            client_creator=client_creator,
+            off_brain_weight=weights,
+            prefetches=prefetches,
+            indexid=cfg.mongo.index_id,
+            db_collection=collections,
+            db_name=databases,
+            db_fields=dbfields,
+            subvolume_shape=subvolume_shape,
+            lowprecision=bit16,
+            lossweight = [w / sum(cfg.model.loss_weight) for w in cfg.model.loss_weight] if sum(cfg.model.loss_weight) != 0 else ValueError("The sum of loss weights cannot be zero."),
+            db_host=db_host,
+            wandb_team=cfg.wandb.team,
+            maxshape=cfg.model.maxshape,
+            hparams=hparams,
+        )
+        runner.run()
 
 
 if __name__ == "__main__":
