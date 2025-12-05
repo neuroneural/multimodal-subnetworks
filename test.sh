@@ -24,10 +24,23 @@ source /data/users2/ppopov1/miniconda/bin/activate catalyst12
 echo "Using python from: $(which python)"
 echo "Conda environment: $CONDA_DEFAULT_ENV"
 
+DATASETS = (
+    "fbirn_dwi"
+    "fbirn_falff"
+    "fbirn_smri"
+    "ukb_dwi"
+    "ukb_falff"
+    "ukb_smri"
+)
+
+dataset_id=${SLURM_ARRAY_TASK_ID:-0}
+
 # Run training with Hydra
 python train_script_rev.py \
-    --config-name new_conf_fbirn_falff \
+    --config-name new_conf \
     --config-dir conf
+    experiment.experiment_name="baselines" \
+    experiment.collections=${DATASETS[dataset_id]}
 
 
 # Cleanup

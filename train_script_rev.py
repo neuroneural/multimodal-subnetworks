@@ -58,7 +58,7 @@ class CustomRunner(dl.Runner):
         client_creator,
         off_brain_weight: float,
         indexid: str,
-        modelconfig: str,
+        # modelconfig: str,
         db_host: str,
         db_name: str,
         db_collection: str,
@@ -80,7 +80,7 @@ class CustomRunner(dl.Runner):
         self.model_path = model_path
         self.n_channels = n_channels
         self.n_classes = n_classes
-        self.config_file = modelconfig
+        # self.config_file = modelconfig
         self.optimize_inline = optimize_inline
         self.onecycle_lr = onecycle_lr
         self.validation_percent = validation_percent
@@ -324,20 +324,20 @@ class CustomRunner(dl.Runner):
         return scheduler
 
     def get_callbacks(self):
-        # checkpoint_params = {
-        #     # "sync": False,
-        #     "save_best": True,
-        #     "metric_key": "loss",
-        #     "loader_key": "valid",
-        #     "minimize": True,
-        # }
         checkpoint_params = {
             # "sync": False,
             "save_best": True,
-            "metric_key": "accuracy",
+            "metric_key": "loss",
             "loader_key": "valid",
-            "minimize": False,
+            "minimize": True,
         }
+        # checkpoint_params = {
+        #     # "sync": False,
+        #     "save_best": True,
+        #     "metric_key": "accuracy",
+        #     "loader_key": "valid",
+        #     "minimize": False,
+        # }
         if self.model_path:
             checkpoint_params.update({"resume_model": self.model_path})
         return {
@@ -428,7 +428,7 @@ def main(cfg: DictConfig):
     # Loading common parameters
     # Model parameters
     n_classes = cfg.model.n_classes
-    config_file = cfg.model.config_file
+    # config_file = cfg.model.config_file
     optimize_inline = cfg.model.optimize_inline
     model_channels = cfg.model.model_channels
     use_groupnorm = cfg.model.use_groupnorm
@@ -444,6 +444,7 @@ def main(cfg: DictConfig):
     )
 
     # Evaluate the Python code from the YAML config
+    experiment_name = cfg.experiment.experiment_name
     cubesizes = cfg.experiment.cubesizes
     numcubes = cfg.experiment.numcubes
     numvolumes = cfg.experiment.numvolumes
@@ -467,7 +468,7 @@ def main(cfg: DictConfig):
         / 256
     )
     wandb_experiment = (
-        f"collection {collections}, dbfields {dbfields}"
+        f"{experiment_name}: collection {collections}, dbfields {dbfields}"
     )
 
     # Set database parameters
@@ -480,8 +481,7 @@ def main(cfg: DictConfig):
     #     loadcheckpoint: False
     #     model: "../logs/tmp/new_test_fbirn_falff/model.last.pth"
     #     logdir: "./logs/tmp/new_test_fbirn_falff/"
-    logdir = cfg.paths.logdir
-    logdir = f"{logdir}_{collections}_{dbfields}"
+    logdir = f"./logs/{experiment_name}_{collections}_{dbfields}"
     os.makedirs(logdir, exist_ok=True)
 
     # Set hparams 
@@ -503,7 +503,7 @@ def main(cfg: DictConfig):
             model_path=model_path,
             n_channels=model_channels,
             n_classes=n_classes,
-            modelconfig=config_file,
+            # modelconfig=config_file,
             n_epochs=epochs,
             optimize_inline=optimize_inline,
             validation_percent=validation_percent,

@@ -12,16 +12,16 @@ mongo:
   
 
 wandb:
-        team: "neuro-imaging-mmsn"  # Your specified team name
-        project: "multimodal-subnetworks"  # Your requested project name
+  team: "neuroneural"  # Your specified team name
+  project: "holographic_project"  # Your requested project name
+        # team: "neuro-imaging-mmsn"  # Your specified team name
+        # project: "multimodal-subnetworks"  # Your requested project name
 
-  #team: "neuroneural"  # Your specified team name
-  #project: "testing_with_Joanne"  # Your requested project name
 
 bit16: False
 
 model:
-  config_file: /data/users2/jwardell1/multimodal-subnetworks/conf/resnet3d_gender_bn_64base_2.2.2.2_exp01.yaml
+  # config_file: /data/users2/jwardell1/multimodal-subnetworks/conf/resnet3d_gender_bn_64base_2.2.2.2_exp01.yaml
   n_classes: 1  # Binary gender classification
   model_channels: 64  # ResNet base channels
   model_label: "_resnet3d_gender_64base"
@@ -34,22 +34,24 @@ model:
 
 paths:
   loadcheckpoint: False
-  model: "../logs/new_test/model.last.pth"
-  logdir: "./logs/new_test"
+  # model: "./logs/new_test/model.last.pth" # set loadcheckpoint to True to use
+  # logdir: "./logs/new_test" # use experiment.experiment_name instead
 
 client_creator:
   crop_tensor: False
   normalize: False  # Data already normalized
 
 experiment:
+  experiment_name: test # used in wandb name and logdir name
   cv_folds: 10
   lr_scale: 0.01
   cubesizes: 256
   numcubes: 1
-  numvolumes: 4
+  numvolumes: 8
   weights: 1
   databases: "multimodalSubnetworks"
-  collections: "fbirn_falff"
+  collections: "???"
+  # collections: "fbirn_falff"
   dbfields: ["image", "gender"]
   epochs: 60
   prefetches: 16
