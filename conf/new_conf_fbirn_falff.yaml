@@ -3,16 +3,17 @@
 mongo:
   host: "10.245.12.58"
   host_slurm: "arctrdcn018.rs.gsu.edu"
-  dbname: "multimodalSubnetworks"
-  collection: "fbirn_falff"  # Will cycle through collections
-  index_id: "id"
-  labelfield: "gender.encoded"  # Using encoded gender (0: Male, 1: Female)
-  datafield: "bin"  # Points to .bin collections
   validation_percent: 0.2
+  index_id: "id"
+  #dbname: "multimodalSubnetworks"
+  #collection: "fbirn_dwi"  
+  #labelfield: "gender.encoded" 
+  #datafield: "bin"  # Points to .bin collections
+  
 
 wandb:
-  team: "pavalipopov"  # Your specified team name
-  project: "multimodal-subnetworks-rev"  # Your requested project name
+        team: "neuro-imaging-mmsn"  # Your specified team name
+        project: "multimodal-subnetworks"  # Your requested project name
 
   #team: "neuroneural"  # Your specified team name
   #project: "testing_with_Joanne"  # Your requested project name
