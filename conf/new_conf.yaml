@@ -34,8 +34,8 @@ model:
 
 paths:
   loadcheckpoint: False
-  # model: "./logs/new_test/model.last.pth" # set loadcheckpoint to True to use
-  # logdir: "./logs/new_test" # use experiment.experiment_name instead
+  # model: "./logs/test/model.last.pth" # set loadcheckpoint to True to use
+  logdir: "./logs/" # use experiment.experiment_name instead
 
 client_creator:
   crop_tensor: False

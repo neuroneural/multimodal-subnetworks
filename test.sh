@@ -24,7 +24,7 @@ source /data/users2/ppopov1/miniconda/bin/activate catalyst12
 echo "Using python from: $(which python)"
 echo "Conda environment: $CONDA_DEFAULT_ENV"
 
-DATASETS = (
+DATASETS=(
     "fbirn_dwi"
     "fbirn_falff"
     "fbirn_smri"
@@ -38,7 +38,7 @@ dataset_id=${SLURM_ARRAY_TASK_ID:-0}
 # Run training with Hydra
 python train_script_rev.py \
     --config-name new_conf \
-    --config-dir conf
+    --config-dir conf \
     experiment.experiment_name="baselines" \
     experiment.collections=${DATASETS[dataset_id]}
 
