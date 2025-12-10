@@ -40,6 +40,7 @@ python train_script_rev.py \
     --config-name new_conf \
     --config-dir conf \
     experiment.experiment_name="baselines" \
+    experiment.databases="fbirn" \
     experiment.collections=${DATASETS[dataset_id]}
 
 

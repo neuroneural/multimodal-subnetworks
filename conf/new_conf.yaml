@@ -49,7 +49,7 @@ experiment:
   numcubes: 1
   numvolumes: 8
   weights: 1
-  databases: "multimodalSubnetworks"
+  databases: "???"
   collections: "???"
   # collections: "fbirn_falff"
   dbfields: ["image", "gender"]
