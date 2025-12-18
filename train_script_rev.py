@@ -165,6 +165,8 @@ class CustomRunner(dl.Runner):
 
         client = MongoClient("mongodb://" + self.db_host + ":27017")
         db = client[self.db_name]
+        print(self.db_name)
+        print(self.db_collection)
         posts = db[self.db_collection + ".bin"]
 
 
@@ -172,26 +174,41 @@ class CustomRunner(dl.Runner):
             posts.find_one(sort=[(self.index_id, -1)])[self.index_id] + 1
         )
 
+        # print(f"Number of examples in the dataset: {num_examples}")
+        # print(f"self.index_id: {self.index_id}")
+        # # print(posts.find_one(sort=[(self.index_id, -1)]))
+        # # return
+
         # load all labels for stratified splits
         def load_label_for_id(collection, id_value, label_kind, id_field="id"):
             samples = list(
                 collection.find(
-                    {id_field: id_value, "kind": label_kind},
+                    # {id_field: id_value, "kind": label_kind},
+                    {id_field: id_value+1},
                     {"chunk": 1, "chunk_id": 1}
                 )
             )
+            print(id_value)
             # Sort chunks and join
             samples = sorted(samples, key=lambda x: x["chunk_id"])
+            # print(samples)
+            print(len(samples))
+            
             binary = b"".join(s["chunk"] for s in samples)
             # Decode using the exact same transform
             return self.funcs["mytransform"](binary)
         labels = []
-        for i in range(num_examples):
+        for i in range(1, num_examples+1):
             tensor = load_label_for_id(posts, i, self.db_fields[1], id_field=self.index_id)
             labels.append(tensor.item())
         labels = np.array(labels)
     
         # Create CV split
+        # labels = np.array([0]*num_examples)
+        # labels[0] = 1
+        # labels[-1] = 1
+        # labels[-3] = 1
+        # labels[-2] = 1
         cv_folds = StratifiedKFold(n_splits=self._hparams["experiment"]["cv_folds"], shuffle=True, random_state=SEED)
         train_idx, test_idx = list(cv_folds.split(np.zeros(num_examples), labels))[self._hparams["fold_idx"]]
         # split train into train and validation
