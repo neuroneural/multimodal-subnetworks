@@ -21,7 +21,9 @@ from resnet import ResNet3D
 
 from mindfultensors.mongoloader import MongoDataset, MongoClient
 from mindfultensors.utils import unit_interval_normalize, DBBatchSampler
+
 from src.db_client import ClientCreator
+from src.customMongoDataset import CustomMongoDataset
 
 SEED = random.randint(0, 9999)
 utils.set_global_seed(SEED)
@@ -64,6 +66,7 @@ class CustomRunner(dl.Runner):
         db_collection: str,
         wandb_team: str,
         db_fields: tuple,
+        meta_fields: tuple,
         groupnorm=False,
         prefetches=8,
         volume_shape=[256] * 3,
@@ -86,10 +89,13 @@ class CustomRunner(dl.Runner):
         self.validation_percent = validation_percent
         self.rmsprop_lr = rmsprop_lr
         self.prefetches = prefetches
+
         self.db_host = db_host
         self.db_name = db_name
         self.db_collection = db_collection
         self.db_fields = db_fields
+        self.meta_fields = meta_fields
+
         self.shape = subvolume_shape[0]
         self.num_subcubes = num_subcubes
         self.num_volumes = num_volumes
@@ -163,66 +169,56 @@ class CustomRunner(dl.Runner):
             else self.funcs["mycollate"]
         )
 
+        # get all IDs with the required modalities, pull their labels for cross-validation splits
+
         client = MongoClient("mongodb://" + self.db_host + ":27017")
         db = client[self.db_name]
-        print(self.db_name)
-        print(self.db_collection)
-        posts = db[self.db_collection + ".bin"]
+        posts_bin = db[self.db_collection + ".bin"]
+        posts_meta = db[self.db_collection + ".meta"]
 
-
-        num_examples = int(
-            posts.find_one(sort=[(self.index_id, -1)])[self.index_id] + 1
+        # get ids, pull labels
+        all_ids = posts_meta.distinct( # pull all unique IDs (subjects) with at least one modality in db_fields
+            "id",
+            {'modalities': {"$in": self.db_fields}}
         )
+        all_ids = sorted(all_ids)
+        # print(all_ids)
 
-        # print(f"Number of examples in the dataset: {num_examples}")
-        # print(f"self.index_id: {self.index_id}")
-        # # print(posts.find_one(sort=[(self.index_id, -1)]))
-        # # return
-
-        # load all labels for stratified splits
-        def load_label_for_id(collection, id_value, label_kind, id_field="id"):
-            samples = list(
-                collection.find(
-                    # {id_field: id_value, "kind": label_kind},
-                    {id_field: id_value+1},
-                    {"chunk": 1, "chunk_id": 1}
-                )
-            )
-            print(id_value)
-            # Sort chunks and join
-            samples = sorted(samples, key=lambda x: x["chunk_id"])
-            # print(samples)
-            print(len(samples))
-            
-            binary = b"".join(s["chunk"] for s in samples)
-            # Decode using the exact same transform
-            return self.funcs["mytransform"](binary)
         labels = []
-        for i in range(1, num_examples+1):
-            tensor = load_label_for_id(posts, i, self.db_fields[1], id_field=self.index_id)
-            labels.append(tensor.item())
+        for id in all_ids:
+            label = posts_meta.find_one({"id": id}, self.meta_fields)[self.meta_fields[0]] # get label for the id
+            labels.append(label)
         labels = np.array(labels)
     
         # Create CV split
-        # labels = np.array([0]*num_examples)
-        # labels[0] = 1
-        # labels[-1] = 1
-        # labels[-3] = 1
-        # labels[-2] = 1
         cv_folds = StratifiedKFold(n_splits=self._hparams["experiment"]["cv_folds"], shuffle=True, random_state=SEED)
-        train_idx, test_idx = list(cv_folds.split(np.zeros(num_examples), labels))[self._hparams["fold_idx"]]
+        train_idx, test_idx = list(cv_folds.split(all_ids, labels))[self._hparams["fold_idx"]]
         # split train into train and validation
         train_idx, valid_idx = train_test_split(train_idx, test_size=self.validation_percent, stratify=labels[train_idx], random_state=SEED)
-        train_idx = train_idx.tolist() # mongo stuff below works only with native python types (for batches)
-        valid_idx = valid_idx.tolist()
-        test_idx = test_idx.tolist()
+
+        all_ids = np.array(all_ids)
+        train_ids = all_ids[train_idx].tolist() # mongo expects default python list, not numpy array
+        valid_ids = all_ids[valid_idx].tolist()
+        test_ids = all_ids[test_idx].tolist()
+
+        # save splits into logdir
+        with open(os.path.join(self._logdir, 'train_ids.txt'), 'w') as f:
+            for id in train_ids:
+                f.write(f"{id}\n")
+        with open(os.path.join(self._logdir, 'valid_ids.txt'), 'w') as f:
+            for id in valid_ids:
+                f.write(f"{id}\n")
+        with open(os.path.join(self._logdir, 'test_ids.txt'), 'w') as f:
+            for id in test_ids:
+                f.write(f"{id}\n")
 
         # Create dataloaders
-        train_dataset = MongoDataset(
-            train_idx, 
+        train_dataset = CustomMongoDataset(
+            train_ids, 
             self.funcs["mytransform"],
             None,
             self.db_fields,
+            self.meta_fields,
             normalize=unit_interval_normalize,
             id=self.index_id,
         )
@@ -247,11 +243,12 @@ class CustomRunner(dl.Runner):
             num_prefetches=self.prefetches,
         )
 
-        valid_dataset = MongoDataset(
-            valid_idx,#take first validation_percent percent from list
+        valid_dataset = CustomMongoDataset(
+            valid_ids,#take first validation_percent percent from list
             self.funcs["mytransform"],
             None,
             self.db_fields,
+            self.meta_fields,
             normalize=unit_interval_normalize,
             id=self.index_id,
         )
@@ -278,11 +275,12 @@ class CustomRunner(dl.Runner):
             num_prefetches=self.prefetches,
         )
 
-        test_dataset = MongoDataset(
-            test_idx,#take first validation_percent percent from list
+        test_dataset = CustomMongoDataset(
+            test_ids,#take first validation_percent percent from list
             self.funcs["mytransform"],
             None,
             self.db_fields,
+            self.meta_fields,
             normalize=unit_interval_normalize,
             id=self.index_id,
         )
@@ -440,7 +438,7 @@ class CustomRunner(dl.Runner):
 
 
 
-@hydra.main(config_path="conf", config_name="new_conf_fbirn_falff", version_base=None)
+@hydra.main(config_path="conf", config_name="new_conf", version_base=None)
 def main(cfg: DictConfig):
     # Loading common parameters
     # Model parameters
@@ -470,6 +468,7 @@ def main(cfg: DictConfig):
     collections = cfg.experiment.collections
     # dbfields = [tuple(fields) for fields in cfg.experiment.dbfields]  # Convert to tuples
     dbfields = tuple(cfg.experiment.dbfields)
+    metafields = tuple(cfg.experiment.metafields)
     epochs = cfg.experiment.epochs
     prefetches = cfg.experiment.prefetches
     attenuates = cfg.experiment.attenuates
@@ -485,7 +484,7 @@ def main(cfg: DictConfig):
         / 256
     )
     wandb_experiment = (
-        f"{experiment_name}: collection {collections}, dbfields {dbfields}"
+        f"{experiment_name}: {collections}, {dbfields}-{metafields}"
     )
 
     # Set database parameters
@@ -498,10 +497,10 @@ def main(cfg: DictConfig):
     #     loadcheckpoint: False
     #     model: "../logs/tmp/new_test_fbirn_falff/model.last.pth"
     #     logdir: "./logs/tmp/new_test_fbirn_falff/"
-    logdir = f"./logs/{experiment_name}_{collections}_{dbfields}"
+    logdir = f"{cfg.paths.logdir}/{experiment_name}_{collections}_{dbfields}_{metafields}"
     os.makedirs(logdir, exist_ok=True)
 
-    # Set hparams 
+    # Set hparams
     hparams = OmegaConf.to_container(cfg, resolve=True)
 
     # run cross-validation
@@ -509,12 +508,11 @@ def main(cfg: DictConfig):
         print(f"Starting fold {fold_idx+1}/{cfg.experiment.cv_folds}")
         hparams["fold_idx"] = fold_idx
 
-        logdir = cfg.paths.logdir
-        logdir = f"{logdir}_{collections}_{dbfields}/fold_{fold_idx}"
+        rundir = f"{logdir}/fold_{fold_idx}"
         os.makedirs(logdir, exist_ok=True)
 
         runner = CustomRunner(
-            logdir=logdir, # this is self._logdir
+            logdir=rundir, # this is self._logdir
             wandb_project=wandb_project,
             wandb_experiment=wandb_experiment,
             model_path=model_path,
@@ -536,6 +534,7 @@ def main(cfg: DictConfig):
             db_collection=collections,
             db_name=databases,
             db_fields=dbfields,
+            meta_fields=metafields,
             subvolume_shape=subvolume_shape,
             lowprecision=bit16,
             lossweight = [w / sum(cfg.model.loss_weight) for w in cfg.model.loss_weight] if sum(cfg.model.loss_weight) != 0 else ValueError("The sum of loss weights cannot be zero."),

@@ -49,10 +49,10 @@ experiment:
   numcubes: 1
   numvolumes: 8
   weights: 1
-  databases: "???"
-  collections: "???"
-  # collections: "fbirn_falff"
-  dbfields: ["image", "gender"]
+  databases: "MindfulTensors"
+  collections: "fbirn"
+  dbfields: ["falff"]
+  metafields: ["gender_encoded"]
   epochs: 60
   prefetches: 16
   attenuates: 0.8

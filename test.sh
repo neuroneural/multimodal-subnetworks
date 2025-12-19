@@ -25,24 +25,55 @@ echo "Using python from: $(which python)"
 echo "Conda environment: $CONDA_DEFAULT_ENV"
 
 DATASETS=(
-    "fbirn_dwi"
-    "fbirn_falff"
-    "fbirn_smri"
-    "ukb_dwi"
-    "ukb_falff"
-    "ukb_smri"
+  "fbirn"
+  "ukb"
 )
 
-dataset_id=${SLURM_ARRAY_TASK_ID:-0}
+MODALITY=(
+  "dwi"
+  "falff"
+  "smri"
+)
 
-# Run training with Hydra
+TASK_ID=${SLURM_ARRAY_TASK_ID:-0}
+
+dataset_id=$(( TASK_ID / ${#MODALITY[@]} ))
+modality_id=$(( TASK_ID % ${#MODALITY[@]} ))
+
+echo "Running with dataset: ${DATASETS[$dataset_id]}"
+echo "Running with modality: ${MODALITY[$modality_id]}"
+
+# python train_script_rev.py \
+#   --config-name new_conf \
+#   --config-dir conf \
+#   experiment.experiment_name="baselines" \
+#   experiment.collections="${DATASETS[$dataset_id]}" \
+#   experiment.dbfields="[${MODALITY[$modality_id]}]" \
+#   experiment.metafields="[gender_encoded]"
+
 python train_script_rev.py \
-    --config-name new_conf \
-    --config-dir conf \
-    experiment.experiment_name="baselines" \
-    experiment.databases="fbirn" \
-    experiment.collections=${DATASETS[dataset_id]}
+  --config-name new_conf \
+  --config-dir conf \
+  experiment.experiment_name="baselines" \
+  experiment.collections="${DATASETS[$dataset_id]}" \
+  experiment.dbfields="[dwi]" \
+  experiment.metafields="[gender_encoded]"
 
+python train_script_rev.py \
+  --config-name new_conf \
+  --config-dir conf \
+  experiment.experiment_name="baselines" \
+  experiment.collections="${DATASETS[$dataset_id]}" \
+  experiment.dbfields="[falff]" \
+  experiment.metafields="[gender_encoded]"
+
+python train_script_rev.py \
+  --config-name new_conf \
+  --config-dir conf \
+  experiment.experiment_name="baselines" \
+  experiment.collections="${DATASETS[$dataset_id]}" \
+  experiment.dbfields="[smri]" \
+  experiment.metafields="[gender_encoded]"
 
 # Cleanup
 sleep 10s
