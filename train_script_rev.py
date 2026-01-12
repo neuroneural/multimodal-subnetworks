@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from resnet import ResNet3D
 
-from mindfultensors.mongoloader import MongoDataset, MongoClient
+from mindfultensors.mongoloader import MongoClient
 from mindfultensors.utils import unit_interval_normalize, DBBatchSampler
 
 from src.db_client import ClientCreator
@@ -38,7 +38,7 @@ if version.parse(torch_version) >= version.parse("2.3"):
     scaler = torch.amp.GradScaler()
 else:
     scaler = torch.cuda.amp.GradScaler()
-
+    
 # CustomRunner – PyTorch for-loop decomposition
 # https://github.com/catalyst-team/catalyst#minimal-examples
 class CustomRunner(dl.Runner):
@@ -435,8 +435,6 @@ class CustomRunner(dl.Runner):
         del label
         del y_hat
         del loss
-
-
 
 @hydra.main(config_path="conf", config_name="new_conf", version_base=None)
 def main(cfg: DictConfig):

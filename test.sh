@@ -43,38 +43,49 @@ modality_id=$(( TASK_ID % ${#MODALITY[@]} ))
 echo "Running with dataset: ${DATASETS[$dataset_id]}"
 echo "Running with modality: ${MODALITY[$modality_id]}"
 
+python train_script_rev.py \
+  --config-name new_conf \
+  --config-dir conf \
+  experiment.experiment_name="baselines" \
+  experiment.collections="${DATASETS[$dataset_id]}" \
+  experiment.dbfields="[${MODALITY[$modality_id]}]" \
+  experiment.metafields="[gender_encoded]"
+
+## FBIRN modalities
 # python train_script_rev.py \
 #   --config-name new_conf \
 #   --config-dir conf \
 #   experiment.experiment_name="baselines" \
 #   experiment.collections="${DATASETS[$dataset_id]}" \
-#   experiment.dbfields="[${MODALITY[$modality_id]}]" \
+#   experiment.dbfields="[dwi]" \
 #   experiment.metafields="[gender_encoded]"
 
-python train_script_rev.py \
-  --config-name new_conf \
-  --config-dir conf \
-  experiment.experiment_name="baselines" \
-  experiment.collections="${DATASETS[$dataset_id]}" \
-  experiment.dbfields="[dwi]" \
-  experiment.metafields="[gender_encoded]"
+# python train_script_rev.py \
+#   --config-name new_conf \
+#   --config-dir conf \
+#   experiment.experiment_name="baselines" \
+#   experiment.collections="${DATASETS[$dataset_id]}" \
+#   experiment.dbfields="[falff]" \
+#   experiment.metafields="[gender_encoded]"
 
-python train_script_rev.py \
-  --config-name new_conf \
-  --config-dir conf \
-  experiment.experiment_name="baselines" \
-  experiment.collections="${DATASETS[$dataset_id]}" \
-  experiment.dbfields="[falff]" \
-  experiment.metafields="[gender_encoded]"
+# python train_script_rev.py \
+#   --config-name new_conf \
+#   --config-dir conf \
+#   experiment.experiment_name="baselines" \
+#   experiment.collections="${DATASETS[$dataset_id]}" \
+#   experiment.dbfields="[smri]" \
+#   experiment.metafields="[gender_encoded]"
 
-python train_script_rev.py \
-  --config-name new_conf \
-  --config-dir conf \
-  experiment.experiment_name="baselines" \
-  experiment.collections="${DATASETS[$dataset_id]}" \
-  experiment.dbfields="[smri]" \
-  experiment.metafields="[gender_encoded]"
 
+## TEST
+# python train_script_rev.py \
+#   --config-name new_conf \
+#   --config-dir conf \
+#   experiment.experiment_name="test" \
+#   experiment.collections="fbirn" \
+#   experiment.dbfields="[smri]" \
+#   experiment.metafields="[gender_encoded]"
+  
 # Cleanup
 sleep 10s
 echo "Job $SLURM_JOB_ID completed"

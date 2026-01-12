@@ -7,8 +7,8 @@ mongo:
   index_id: "id"
   
 wandb:
-  team: "neuroneural"  # Your specified team name
-  project: "holographic_project"  # Your requested project name
+  team: "pavalipopov"  # Your specified team name
+  project: "multimodal-subnetworks-rev"  # Your requested project name
 
 bit16: False
 
