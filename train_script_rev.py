@@ -23,7 +23,7 @@ from mindfultensors.mongoloader import MongoClient
 from mindfultensors.utils import unit_interval_normalize, DBBatchSampler
 
 from src.db_client import ClientCreator
-from src.customMongoDataset import CustomMongoDataset
+from src.customMongoDataset import CustomMongoDataset, MultimodalMongoDataset, multimodal_collate
 
 SEED = random.randint(0, 9999)
 utils.set_global_seed(SEED)
@@ -155,6 +155,9 @@ class CustomRunner(dl.Runner):
         return self.n_epochs
 
     def get_loaders(self):
+        #MM
+        self.multimodal = True if len(self.db_fields) > 1 else False
+
         self.funcs = {
             "createclient": self.client_creator.create_client,
             "createVclient": self.client_creator.create_client,
@@ -162,8 +165,9 @@ class CustomRunner(dl.Runner):
             "mycollate_full": self.client_creator.mycollate_full,
             "mytransform": self.client_creator.mytransform,
         }
-
+        
         self.collate = (
+            multimodal_collate if self.multimodal else #MM
             self.funcs["mycollate_full"]
             if self.shape == 256
             else self.funcs["mycollate"]
@@ -212,8 +216,10 @@ class CustomRunner(dl.Runner):
             for id in test_ids:
                 f.write(f"{id}\n")
 
+
+        usedDataset = MultimodalMongoDataset if self.multimodal else CustomMongoDataset #MM
         # Create dataloaders
-        train_dataset = CustomMongoDataset(
+        train_dataset = usedDataset(
             train_ids, 
             self.funcs["mytransform"],
             None,
@@ -243,7 +249,7 @@ class CustomRunner(dl.Runner):
             num_prefetches=self.prefetches,
         )
 
-        valid_dataset = CustomMongoDataset(
+        valid_dataset = usedDataset(
             valid_ids,#take first validation_percent percent from list
             self.funcs["mytransform"],
             None,
@@ -275,7 +281,7 @@ class CustomRunner(dl.Runner):
             num_prefetches=self.prefetches,
         )
 
-        test_dataset = CustomMongoDataset(
+        test_dataset = usedDataset(
             test_ids,#take first validation_percent percent from list
             self.funcs["mytransform"],
             None,
@@ -386,7 +392,10 @@ class CustomRunner(dl.Runner):
         if self.engine.is_ddp:
             torch.cuda.synchronize()
         
-        sample, label = batch
+        if self.multimodal: #MM
+            sample, modality, label = batch
+        else:
+            sample, label = batch
 
         # run model forward/backward pass
         if self.model.training:
@@ -503,6 +512,7 @@ def main(cfg: DictConfig):
 
     # run cross-validation
     for fold_idx in range(cfg.experiment.cv_folds):
+
         print(f"Starting fold {fold_idx+1}/{cfg.experiment.cv_folds}")
         hparams["fold_idx"] = fold_idx
 
