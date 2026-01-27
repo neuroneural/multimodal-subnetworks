@@ -23,7 +23,8 @@ from mindfultensors.mongoloader import MongoClient
 from mindfultensors.utils import unit_interval_normalize, DBBatchSampler
 
 from src.db_client import ClientCreator
-from src.customMongoDataset import CustomMongoDataset, MultimodalMongoDataset, multimodal_collate
+from src.customMongoDataset import CustomMongoDataset, MultimodalMongoDataset, multimodal_collate, make_serial
+from src.masked_model import MultiMaskSNIPWrapper
 
 SEED = random.randint(0, 9999)
 utils.set_global_seed(SEED)
@@ -112,6 +113,8 @@ class CustomRunner(dl.Runner):
         self.maxshape = maxshape
         self._hparams = hparams
 
+        self.masked = self._hparams["model"].get("masked", False)
+
     def get_engine(self):
         if torch.cuda.device_count() > 1:
             return dl.DistributedDataParallelEngine(
@@ -156,7 +159,7 @@ class CustomRunner(dl.Runner):
 
     def get_loaders(self):
         #MM
-        self.multimodal = True if len(self.db_fields) > 1 else False
+        self.multimodal = True if (len(self.db_fields) > 1 or self.masked) else False
 
         self.funcs = {
             "createclient": self.client_creator.create_client,
@@ -204,6 +207,17 @@ class CustomRunner(dl.Runner):
         train_ids = all_ids[train_idx].tolist() # mongo expects default python list, not numpy array
         valid_ids = all_ids[valid_idx].tolist()
         test_ids = all_ids[test_idx].tolist()
+
+        # get data for masks calculation
+        if self.masked:
+            print("Preparing SNIP mask data...")
+            snip_batch_size = self._hparams["model"].get("snip_batch_size", 20)
+            snip_batch_ids = random.sample(train_ids, len(train_ids))[:snip_batch_size]
+
+            snip_data, snip_modalities, snip_labels = self.get_snip_data(posts_bin, posts_meta, snip_batch_ids)
+            self.snip_data = (snip_data, snip_modalities, snip_labels)
+            print(f"SNIP mask data prepared. Data shape: {snip_data.shape}, Modalities: {snip_modalities.shape}, Labels shape: {snip_labels.shape}")
+
 
         # save splits into logdir
         with open(os.path.join(self._logdir, 'train_ids.txt'), 'w') as f:
@@ -315,6 +329,60 @@ class CustomRunner(dl.Runner):
 
         return {"train": train_dataloader, "valid": valid_dataloader, "infer": test_dataloader}
 
+    def get_snip_data(self, posts_bin, posts_meta, snip_ids):
+        snip_dict = {}
+
+        snip_samples = list(
+            posts_bin.find(
+                {
+                    "id": {"$in": snip_ids},
+                    "kind": {"$in": self.db_fields}, # .bin contains 3D kinds like 'smri', 'falff', 'dwi'. Scalar labels are stored in .meta
+                },
+                {"id": 1, "chunk": 1, "kind": 1, "chunk_id": 1},
+            )
+        )
+
+        for id in snip_ids:
+            # get ID's label and modalities
+            meta_for_id = list(
+                posts_meta.find(
+                    {
+                        "id": id,
+                    },
+                    list(self.meta_fields) + ["modalities"],
+                )
+            )
+
+            assert len(meta_for_id) != 0, f"No meta entries found for id {id}"
+            assert len(meta_for_id) < 2, f"More than one meta entry found for id {id}"
+
+            label = meta_for_id[0][self.meta_fields[0]]
+            modalities = meta_for_id[0]["modalities"]
+            id_modalities = set(modalities).intersection(set(self.db_fields))
+
+            # Get samples for this ID
+            samples_for_id = [
+                sample
+                for sample in snip_samples
+                if sample["id"] == id
+            ]
+
+            for mod in id_modalities:
+                data = make_serial(samples_for_id, mod)
+
+                for mod in id_modalities:
+                    data = make_serial(samples_for_id, mod)
+
+                    result = {
+                        "input": unit_interval_normalize(self.funcs["mytransform"](data).float()),
+                        "modality": mod,
+                        "label": torch.tensor(label).unsqueeze(0),
+                    }
+
+                    snip_dict[str(id)+'_'+mod] = result
+
+        return multimodal_collate({0:snip_dict}) # dict is expected in collate
+
     def get_model(self):
         model = ResNet3D(
             in_channels=1, 
@@ -323,6 +391,19 @@ class CustomRunner(dl.Runner):
         )
         # if self.model_path and os.path.exists(self.model_path):
         #     model.load_state_dict(torch.load(self.model_path))
+
+        if self.masked:
+            print("Using MultiMaskSNIPWrapper for masked training")
+            model = MultiMaskSNIPWrapper(
+                model,
+                sparsity=self._hparams["model"].get("sparsity", 0.9),
+            )
+
+            print("Initializing masks...")
+            snip_data, snip_modalities, snip_labels = self.snip_data
+            model.register_multimodal_masks(snip_modalities, snip_data, snip_labels)
+            print("Masks initialized.")
+
         return model
 
     def get_criterion(self):
@@ -401,7 +482,7 @@ class CustomRunner(dl.Runner):
         if self.model.training:
             if self.bit16:
                 with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
-                    y_hat = self.model.forward(sample)
+                    y_hat = self.model.forward(sample) if not self.masked else self.model.forward(sample, modality)
                     loss = self.criterion(y_hat, label.float())
                 scaler.scale(loss).backward()
                 scaler.step(self.optimizer)
@@ -409,7 +490,7 @@ class CustomRunner(dl.Runner):
                 scaler.update()
                 self.optimizer.zero_grad()
             else:
-                y_hat = self.model.forward(sample)
+                y_hat = self.model.forward(sample) if not self.masked else self.model.forward(sample, modality)
                 loss = self.criterion(y_hat, label.float())
                 loss.backward()
                 self.optimizer.step()
@@ -417,7 +498,7 @@ class CustomRunner(dl.Runner):
                 self.optimizer.zero_grad()
         else:
             with torch.no_grad():
-                y_hat = self.model.forward(sample)
+                y_hat = self.model.forward(sample) if not self.masked else self.model.forward(sample, modality)
                 loss = self.criterion(y_hat, label.float())
 
         # Metrics calculation
@@ -491,7 +572,7 @@ def main(cfg: DictConfig):
         / 256
     )
     wandb_experiment = (
-        f"{experiment_name}: {collections}, {dbfields}-{metafields}"
+        f"{experiment_name}: {collections}, {dbfields}-{metafields}, masked={cfg.model.get('masked', False)}"
     )
 
     # Set database parameters

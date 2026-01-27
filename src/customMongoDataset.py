@@ -158,11 +158,6 @@ def multimodal_collate(results, field=("input", "modality", "label")):
     Use this collate function with BatchPrefetchLoaderWrapper when using MultimodalMongoDataset.
     It will stack the inputs, modality codes, and labels into tensors properly.
     """
-    modality_mapping = {
-        "smri": 0,
-        "falff": 1,
-        "dwi": 2,
-    }
     results = results[0]
     # Assuming 'results' is your dictionary containing all the data
     input_tensors = [results[id_][field[0]] for id_ in results.keys()]
@@ -171,6 +166,35 @@ def multimodal_collate(results, field=("input", "modality", "label")):
     # Stack all input tensors into a single tensor
     stacked_inputs = torch.stack(input_tensors)
     # Stack all label tensors into a single tensor
-    stacked_modalities = torch.stack([torch.tensor(modality_mapping[mod]) for mod in modalities])
+    stacked_modalities = torch.stack([torch.tensor(map_modality_codes(mod)) for mod in modalities])
     stacked_labels = torch.stack(label_tensors)
     return stacked_inputs.unsqueeze(1), stacked_modalities.long(), stacked_labels.long()
+
+def map_modality_codes(mod):
+    """
+    Maps modality strings to integer codes.
+    """
+    modality_mapping = {
+        "smri": 0,
+        "falff": 1,
+        "dwi": 2,
+    }
+    return modality_mapping[mod]
+
+def make_serial(samples_for_id, kind):
+    """
+    Serializes chunks into a single binary blob. From MongoDataset self methods.
+    """
+    return b"".join(
+        [
+            sample["chunk"]
+            for sample in sorted(
+                (
+                    sample
+                    for sample in samples_for_id
+                    if sample["kind"] == kind
+                ),
+                key=lambda x: x["chunk_id"],
+            )
+        ]
+    )
