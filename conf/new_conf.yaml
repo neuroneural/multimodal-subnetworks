@@ -15,7 +15,7 @@ bit16: False
 model:
   # config_file: /data/users2/jwardell1/multimodal-subnetworks/conf/resnet3d_gender_bn_64base_2.2.2.2_exp01.yaml
   masked: False
-  sparsity: 0.9  # 90% sparsity for masked training
+  sparsity: 0.7  # 70% sparsity for masked training
   snip_batch_size: 20
   n_classes: 1  # Binary gender classification
   model_channels: 64  # ResNet base channels
@@ -38,6 +38,7 @@ client_creator:
 
 experiment:
   experiment_name: test # used in wandb name and logdir name
+  cv_seed: 42
   cv_folds: 10
   lr_scale: 0.01
   cubesizes: 256

@@ -4,7 +4,7 @@
 #SBATCH -c 10                    # CPU cores per task
 #SBATCH --mem=96g               # Memory allocation
 #SBATCH -p qTRDGPUH             # Partition name
-#SBATCH -t 4440                 # Time limit in minutes
+#SBATCH -t 6440                 # Time limit in minutes
 #SBATCH --gres=gpu:V100:2            # Single GPU sufficient for ResNet3D
 #SBATCH -J holo_test      # Job name reflecting task
 #SBATCH -D .                        # adding this means that node starting path is the path from which you run this script
@@ -51,7 +51,17 @@ echo "Running with modality: ${MODALITY[$modality_id]}"
 #   experiment.dbfields="[${MODALITY[$modality_id]}]" \
 #   experiment.metafields="[gender_encoded]"
 
-# MASKED 
+
+# RERUNNING ALL
+
+python train_script_rev.py \
+  --config-name new_conf \
+  --config-dir conf \
+  experiment.experiment_name="baselines" \
+  experiment.collections="fbirn" \
+  experiment.dbfields="[falff]" \
+  experiment.metafields="[gender_encoded]" \
+  model.masked=False 
 python train_script_rev.py \
   --config-name new_conf \
   --config-dir conf \
@@ -60,6 +70,86 @@ python train_script_rev.py \
   experiment.dbfields="[falff]" \
   experiment.metafields="[gender_encoded]" \
   model.masked=True 
+
+python train_script_rev.py \
+  --config-name new_conf \
+  --config-dir conf \
+  experiment.experiment_name="baselines" \
+  experiment.collections="fbirn" \
+  experiment.dbfields="[dwi]" \
+  experiment.metafields="[gender_encoded]" \
+  model.masked=False 
+python train_script_rev.py \
+  --config-name new_conf \
+  --config-dir conf \
+  experiment.experiment_name="masked" \
+  experiment.collections="fbirn" \
+  experiment.dbfields="[dwi]" \
+  experiment.metafields="[gender_encoded]" \
+  model.masked=True 
+
+python train_script_rev.py \
+  --config-name new_conf \
+  --config-dir conf \
+  experiment.experiment_name="baselines" \
+  experiment.collections="fbirn" \
+  experiment.dbfields="[smri]" \
+  experiment.metafields="[gender_encoded]" \
+  model.masked=False 
+python train_script_rev.py \
+  --config-name new_conf \
+  --config-dir conf \
+  experiment.experiment_name="masked" \
+  experiment.collections="fbirn" \
+  experiment.dbfields="[smri]" \
+  experiment.metafields="[gender_encoded]" \
+  model.masked=True 
+
+python train_script_rev.py \
+  --config-name new_conf \
+  --config-dir conf \
+  experiment.experiment_name="baselines" \
+  experiment.collections="fbirn" \
+  experiment.dbfields="[falff, smri, dwi]" \
+  experiment.metafields="[gender_encoded]" \
+  model.masked=False 
+python train_script_rev.py \
+  --config-name new_conf \
+  --config-dir conf \
+  experiment.experiment_name="masked" \
+  experiment.collections="fbirn" \
+  experiment.dbfields="[falff, smri, dwi]" \
+  experiment.metafields="[gender_encoded]" \
+  model.masked=True 
+
+# TEST of DDP and cvs saving
+# python train_script_rev.py \
+#   --config-name test_conf \
+#   --config-dir conf \
+#   experiment.experiment_name="test_baseline" \
+#   experiment.collections="fbirn" \
+#   experiment.dbfields="[falff]" \
+#   experiment.metafields="[gender_encoded]" \
+#   model.masked=False 
+
+# python train_script_rev.py \
+#   --config-name test_conf \
+#   --config-dir conf \
+#   experiment.experiment_name="test_masked" \
+#   experiment.collections="fbirn" \
+#   experiment.dbfields="[falff]" \
+#   experiment.metafields="[gender_encoded]" \
+#   model.masked=True 
+
+# # MASKED 
+# python train_script_rev.py \
+#   --config-name new_conf \
+#   --config-dir conf \
+#   experiment.experiment_name="masked" \
+#   experiment.collections="fbirn" \
+#   experiment.dbfields="[falff]" \
+#   experiment.metafields="[gender_encoded]" \
+#   model.masked=True 
 
 # python train_script_rev.py \
 #   --config-name new_conf \

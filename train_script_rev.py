@@ -5,6 +5,7 @@ import hydra
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
 import os
+import csv
 import random
 import shutil
 from packaging import version
@@ -12,6 +13,7 @@ import yaml
 
 from catalyst import dl, metrics, utils
 from catalyst.data import BatchPrefetchLoaderWrapper
+from catalyst.utils import distributed
 
 import torch
 from torch.optim.lr_scheduler import OneCycleLR
@@ -198,10 +200,10 @@ class CustomRunner(dl.Runner):
         labels = np.array(labels)
     
         # Create CV split
-        cv_folds = StratifiedKFold(n_splits=self._hparams["experiment"]["cv_folds"], shuffle=True, random_state=SEED)
+        cv_folds = StratifiedKFold(n_splits=self._hparams["experiment"]["cv_folds"], shuffle=True, random_state=self._hparams["experiment"].get("cv_seed", 42))
         train_idx, test_idx = list(cv_folds.split(all_ids, labels))[self._hparams["fold_idx"]]
         # split train into train and validation
-        train_idx, valid_idx = train_test_split(train_idx, test_size=self.validation_percent, stratify=labels[train_idx], random_state=SEED)
+        train_idx, valid_idx = train_test_split(train_idx, test_size=self.validation_percent, stratify=labels[train_idx], random_state=self._hparams["experiment"].get("cv_seed", 42))
 
         all_ids = np.array(all_ids)
         train_ids = all_ids[train_idx].tolist() # mongo expects default python list, not numpy array
@@ -212,7 +214,8 @@ class CustomRunner(dl.Runner):
         if self.masked:
             print("Preparing SNIP mask data...")
             snip_batch_size = self._hparams["model"].get("snip_batch_size", 20)
-            snip_batch_ids = random.sample(train_ids, len(train_ids))[:snip_batch_size]
+            rng = random.Random(SEED) 
+            snip_batch_ids = rng.sample(train_ids, len(train_ids))[:snip_batch_size]
 
             snip_data, snip_modalities, snip_labels = self.get_snip_data(posts_bin, posts_meta, snip_batch_ids)
             self.snip_data = (snip_data, snip_modalities, snip_labels)
@@ -256,7 +259,7 @@ class CustomRunner(dl.Runner):
                 worker_init_fn=self.funcs["createclient"],
                 persistent_workers=True,
                 prefetch_factor=2,
-                num_workers=4,  # self.prefetches,
+                num_workers=6,  # self.prefetches,
                 # prefetch_factor=None,
                 # num_workers=1,  # self.prefetches,
             ),
@@ -290,7 +293,7 @@ class CustomRunner(dl.Runner):
                 # prefetch_factor=4,
                 # num_workers=4,  # self.prefetches,
                 prefetch_factor=2,
-                num_workers=4,  # self.prefetches,
+                num_workers=6,  # self.prefetches,
             ),
             num_prefetches=self.prefetches,
         )
@@ -322,7 +325,7 @@ class CustomRunner(dl.Runner):
                 # prefetch_factor=4,
                 # num_workers=4,  # self.prefetches,
                 prefetch_factor=2,
-                num_workers=4,  # self.prefetches,
+                num_workers=6,  # self.prefetches,
             ),
             num_prefetches=self.prefetches,
         )
@@ -459,19 +462,55 @@ class CustomRunner(dl.Runner):
             compute_on_call=False
         )
 
+        # --- CSV LOGGING SETUP ---
+        rank = distributed.get_rank()
+        loader_key = self.loader_key # e.g., "train", "valid"
+        self.csv_filename = os.path.join(
+            self._logdir, 
+            f"raw_preds_{loader_key}_rank_{rank}.csv"
+        )
+        file_exists = os.path.isfile(self.csv_filename) and os.path.getsize(self.csv_filename) > 0
+
+        self.csv_file = open(self.csv_filename, 'a', newline='')
+        self.csv_writer = csv.writer(self.csv_file)
+        
+        # Write header only if file is new
+        if not file_exists:
+            self.csv_writer.writerow(["epoch", "probability", "target"])
+
+
     def on_loader_end(self, runner):
         for key in ["loss", "accuracy", "learning rate"]:
             self.loader_metrics[key] = self.meters[key].compute()[0]
         self.loader_metrics["auc"] = self.meters["auc"].compute()[2]
+
+        if self.engine.is_ddp:
+            # Get world_size explicitly
+            world_size = distributed.get_world_size()
+            
+            for key in ["loss", "accuracy"]:
+                local_val = self.loader_metrics[key]
+                
+                # Create a tensor on the correct device
+                # self.engine.device is reliable for the current worker's device
+                val_tensor = torch.tensor([local_val], device=self.engine.device)
+                
+                # FIX: Pass world_size to mean_reduce
+                avg_tensor = distributed.mean_reduce(val_tensor, world_size)
+                self.loader_metrics[key] = avg_tensor.item()
+
+        # CSV Safety Close
+        if hasattr(self, 'csv_file') and self.csv_file:
+            self.csv_file.close()
 
         super().on_loader_end(runner)
 
     # model train/valid step
     def handle_batch(self, batch):
 
-        # Add synchronization before processing
-        if self.engine.is_ddp:
-            torch.cuda.synchronize()
+        # # Add synchronization before processing
+        # if self.engine.is_ddp:
+        #     torch.cuda.synchronize()
         
         if self.multimodal: #MM
             sample, modality, label = batch
@@ -501,11 +540,18 @@ class CustomRunner(dl.Runner):
                 y_hat = self.model.forward(sample) if not self.masked else self.model.forward(sample, modality)
                 loss = self.criterion(y_hat, label.float())
 
-        # Metrics calculation
+        # Metrics calculation and CSV logging
         with torch.no_grad():
             proba_preds = torch.sigmoid(y_hat)
             preds = proba_preds > 0.5
             accuracy = (preds == label).float().mean()
+            
+            # CSV logging: Move to CPU / Numpy
+            probs_np = proba_preds.detach().cpu().numpy().flatten()
+            targets_np = label.detach().cpu().numpy().flatten()
+            epochs_np = [self.epoch_step] * len(probs_np)
+            rows = zip(epochs_np, probs_np, targets_np)
+            self.csv_writer.writerows(rows)
 
 
         self.batch_metrics.update({
@@ -572,7 +618,7 @@ def main(cfg: DictConfig):
         / 256
     )
     wandb_experiment = (
-        f"{experiment_name}: {collections}, {dbfields}-{metafields}, masked={cfg.model.get('masked', False)}"
+        f"{experiment_name}: {collections}, {dbfields}-{metafields}, masked={cfg.model.get('masked', False)}, sps={cfg.model.get('sparsity', None)}"
     )
 
     # Set database parameters
@@ -585,7 +631,7 @@ def main(cfg: DictConfig):
     #     loadcheckpoint: False
     #     model: "../logs/tmp/new_test_fbirn_falff/model.last.pth"
     #     logdir: "./logs/tmp/new_test_fbirn_falff/"
-    logdir = f"{cfg.paths.logdir}/{experiment_name}_{collections}_{dbfields}_{metafields}"
+    logdir = f"{cfg.paths.logdir}/{experiment_name}_{collections}_{dbfields}_{metafields}_masked_{cfg.model.get('masked', False)}_sps_{cfg.model.get('sparsity', None)}"
     os.makedirs(logdir, exist_ok=True)
 
     # Set hparams
