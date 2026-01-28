@@ -136,10 +136,17 @@ class MultiMaskSNIPWrapper(nn.Module):
         Call this BEFORE loading a checkpoint.
         """
         print(f"Restoring parametrization structure for modalities: {modalities_list}")
-        dummy_masks = {mod: torch.tensor([1.0]) for mod in modalities_list}
-        
         for name, module in self.model.named_modules():
-            if isinstance(module, PRUNE_LAYERS):
+            # Only process if it's a target layer and NOT already parametrized
+            if isinstance(module, PRUNE_LAYERS) and not parametrize.is_parametrized(module, "weight"):
+                # Get the actual shape of the weights for this specific layer
+                weight_shape = module.weight.shape
+                # Create dummy masks matching that shape
+                dummy_masks = {
+                    mod: torch.ones(weight_shape) 
+                    for mod in modalities_list
+                }
+                # Register the parametrization
                 snip_mask_module = MultimodalSNIPMask(dummy_masks)
                 parametrize.register_parametrization(module, "weight", snip_mask_module)
         
