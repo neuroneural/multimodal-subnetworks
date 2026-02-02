@@ -27,9 +27,11 @@ from mindfultensors.utils import unit_interval_normalize, DBBatchSampler
 from src.db_client import ClientCreator
 from src.customMongoDataset import CustomMongoDataset, MultimodalMongoDataset, multimodal_collate, make_serial
 from src.masked_model import MultiMaskSNIPWrapper
+from src.utils import setup_distributed_port
 
 SEED = random.randint(0, 9999)
 utils.set_global_seed(SEED)
+setup_distributed_port(seed=SEED)
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:100"
 os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"

@@ -11,6 +11,7 @@
 #SBATCH --output=./_out/run-%j.out     # output file name
 #SBATCH -A psy53c17                 # elpis project name, can be different for you, check you allocations at https://elpis.rs.gsu.edu/
 
+
 # Wait for node allocation
 sleep 10s
 
@@ -51,7 +52,17 @@ echo "Running with modality: ${MODALITY[$modality_id]}"
 #   experiment.dbfields="[${MODALITY[$modality_id]}]" \
 #   experiment.metafields="[gender_encoded]"
 
-# MASKED 
+
+# RERUNNING ALL
+
+python train_script_rev.py \
+  --config-name new_conf \
+  --config-dir conf \
+  experiment.experiment_name="baselines" \
+  experiment.collections="fbirn" \
+  experiment.dbfields="[falff]" \
+  experiment.metafields="[gender_encoded]" \
+  model.masked=False 
 python train_script_rev.py \
   --config-name new_conf \
   --config-dir conf \
@@ -60,6 +71,86 @@ python train_script_rev.py \
   experiment.dbfields="[falff]" \
   experiment.metafields="[gender_encoded]" \
   model.masked=True 
+
+# python train_script_rev.py \
+#   --config-name new_conf \
+#   --config-dir conf \
+#   experiment.experiment_name="baselines" \
+#   experiment.collections="fbirn" \
+#   experiment.dbfields="[dwi]" \
+#   experiment.metafields="[gender_encoded]" \
+#   model.masked=False 
+# python train_script_rev.py \
+#   --config-name new_conf \
+#   --config-dir conf \
+#   experiment.experiment_name="masked" \
+#   experiment.collections="fbirn" \
+#   experiment.dbfields="[dwi]" \
+#   experiment.metafields="[gender_encoded]" \
+#   model.masked=True 
+
+# python train_script_rev.py \
+#   --config-name new_conf \
+#   --config-dir conf \
+#   experiment.experiment_name="baselines" \
+#   experiment.collections="fbirn" \
+#   experiment.dbfields="[smri]" \
+#   experiment.metafields="[gender_encoded]" \
+#   model.masked=False 
+# python train_script_rev.py \
+#   --config-name new_conf \
+#   --config-dir conf \
+#   experiment.experiment_name="masked" \
+#   experiment.collections="fbirn" \
+#   experiment.dbfields="[smri]" \
+#   experiment.metafields="[gender_encoded]" \
+#   model.masked=True 
+
+# python train_script_rev.py \
+#   --config-name new_conf \
+#   --config-dir conf \
+#   experiment.experiment_name="baselines" \
+#   experiment.collections="fbirn" \
+#   experiment.dbfields="[falff, smri, dwi]" \
+#   experiment.metafields="[gender_encoded]" \
+#   model.masked=False 
+# python train_script_rev.py \
+#   --config-name new_conf \
+#   --config-dir conf \
+#   experiment.experiment_name="masked" \
+#   experiment.collections="fbirn" \
+#   experiment.dbfields="[falff, smri, dwi]" \
+#   experiment.metafields="[gender_encoded]" \
+#   model.masked=True 
+
+# TEST of DDP and cvs saving
+# python train_script_rev.py \
+#   --config-name test_conf \
+#   --config-dir conf \
+#   experiment.experiment_name="test_baseline" \
+#   experiment.collections="fbirn" \
+#   experiment.dbfields="[falff]" \
+#   experiment.metafields="[gender_encoded]" \
+#   model.masked=False 
+
+# python train_script_rev.py \
+#   --config-name test_conf \
+#   --config-dir conf \
+#   experiment.experiment_name="test_masked" \
+#   experiment.collections="fbirn" \
+#   experiment.dbfields="[falff]" \
+#   experiment.metafields="[gender_encoded]" \
+#   model.masked=True 
+
+# # MASKED 
+# python train_script_rev.py \
+#   --config-name new_conf \
+#   --config-dir conf \
+#   experiment.experiment_name="masked" \
+#   experiment.collections="fbirn" \
+#   experiment.dbfields="[falff]" \
+#   experiment.metafields="[gender_encoded]" \
+#   model.masked=True 
 
 # python train_script_rev.py \
 #   --config-name new_conf \
