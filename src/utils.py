@@ -1,5 +1,33 @@
+import os
 import torch
+import random
 
+def setup_distributed_port(seed=42, low=2000, high=2200):
+    """
+    Sets MASTER_PORT in os.environ based on SLURM_JOB_ID or random seed.
+    Range default: 20000-29999 (Safe user range).
+    """
+    if "MASTER_PORT" in os.environ:
+        print(f"[Init] MASTER_PORT used by catalyst DDP already set to {os.environ['MASTER_PORT']}")
+        return
+
+    if "SLURM_JOB_ID" in os.environ:
+        job_id = int(os.environ["SLURM_JOB_ID"])
+        # Map the huge Job ID to our specific range
+        # Formula: Low_Bound + (Job_ID % Range_Size)
+        range_size = high - low
+        port = low + (job_id % range_size)
+        
+        print(f"[Init] MASTER_PORT used by catalyst DDP set to {port} (Derived from SLURM_JOB_ID {job_id})")
+    else:
+        # Fallback: Deterministic random based on global SEED
+        # We use a local Random instance to avoid messing up the global random state
+        rng = random.Random(seed)
+        port = rng.randint(low, high)
+        print(f"[Init] MASTER_PORT used by catalyst DDP set to {port} (Random selection based on SEED {seed})")
+    
+    os.environ["MASTER_PORT"] = str(port)
+    
 def qnormalize(img, qmin=0.02, qmax=0.98):
     """Unit interval preprocessing with clipping"""
     qlow = torch.quantile(img, qmin)

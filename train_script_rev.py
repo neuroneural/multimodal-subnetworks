@@ -5,6 +5,7 @@ import hydra
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
 import os
+import csv
 import random
 import shutil
 from packaging import version
@@ -12,6 +13,7 @@ import yaml
 
 from catalyst import dl, metrics, utils
 from catalyst.data import BatchPrefetchLoaderWrapper
+from catalyst.utils import distributed
 
 import torch
 from torch.optim.lr_scheduler import OneCycleLR
@@ -23,10 +25,13 @@ from mindfultensors.mongoloader import MongoClient
 from mindfultensors.utils import unit_interval_normalize, DBBatchSampler
 
 from src.db_client import ClientCreator
-from src.customMongoDataset import CustomMongoDataset, MultimodalMongoDataset, multimodal_collate
+from src.customMongoDataset import CustomMongoDataset, MultimodalMongoDataset, multimodal_collate, make_serial
+from src.masked_model import MultiMaskSNIPWrapper
+from src.utils import setup_distributed_port
 
 SEED = random.randint(0, 9999)
 utils.set_global_seed(SEED)
+setup_distributed_port(seed=SEED)
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:100"
 os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
@@ -112,6 +117,8 @@ class CustomRunner(dl.Runner):
         self.maxshape = maxshape
         self._hparams = hparams
 
+        self.masked = self._hparams["model"].get("masked", False)
+
     def get_engine(self):
         if torch.cuda.device_count() > 1:
             return dl.DistributedDataParallelEngine(
@@ -156,7 +163,7 @@ class CustomRunner(dl.Runner):
 
     def get_loaders(self):
         #MM
-        self.multimodal = True if len(self.db_fields) > 1 else False
+        self.multimodal = True if (len(self.db_fields) > 1 or self.masked) else False
 
         self.funcs = {
             "createclient": self.client_creator.create_client,
@@ -195,15 +202,27 @@ class CustomRunner(dl.Runner):
         labels = np.array(labels)
     
         # Create CV split
-        cv_folds = StratifiedKFold(n_splits=self._hparams["experiment"]["cv_folds"], shuffle=True, random_state=SEED)
+        cv_folds = StratifiedKFold(n_splits=self._hparams["experiment"]["cv_folds"], shuffle=True, random_state=self._hparams["experiment"].get("cv_seed", 42))
         train_idx, test_idx = list(cv_folds.split(all_ids, labels))[self._hparams["fold_idx"]]
         # split train into train and validation
-        train_idx, valid_idx = train_test_split(train_idx, test_size=self.validation_percent, stratify=labels[train_idx], random_state=SEED)
+        train_idx, valid_idx = train_test_split(train_idx, test_size=self.validation_percent, stratify=labels[train_idx], random_state=self._hparams["experiment"].get("cv_seed", 42))
 
         all_ids = np.array(all_ids)
         train_ids = all_ids[train_idx].tolist() # mongo expects default python list, not numpy array
         valid_ids = all_ids[valid_idx].tolist()
         test_ids = all_ids[test_idx].tolist()
+
+        # get data for masks calculation
+        if self.masked:
+            print("Preparing SNIP mask data...")
+            snip_batch_size = self._hparams["model"].get("snip_batch_size", 20)
+            rng = random.Random(SEED) 
+            snip_batch_ids = rng.sample(train_ids, len(train_ids))[:snip_batch_size]
+
+            snip_data, snip_modalities, snip_labels = self.get_snip_data(posts_bin, posts_meta, snip_batch_ids)
+            self.snip_data = (snip_data, snip_modalities, snip_labels)
+            print(f"SNIP mask data prepared. Data shape: {snip_data.shape}, Modalities: {snip_modalities.shape}, Labels shape: {snip_labels.shape}")
+
 
         # save splits into logdir
         with open(os.path.join(self._logdir, 'train_ids.txt'), 'w') as f:
@@ -242,7 +261,7 @@ class CustomRunner(dl.Runner):
                 worker_init_fn=self.funcs["createclient"],
                 persistent_workers=True,
                 prefetch_factor=2,
-                num_workers=4,  # self.prefetches,
+                num_workers=6,  # self.prefetches,
                 # prefetch_factor=None,
                 # num_workers=1,  # self.prefetches,
             ),
@@ -276,7 +295,7 @@ class CustomRunner(dl.Runner):
                 # prefetch_factor=4,
                 # num_workers=4,  # self.prefetches,
                 prefetch_factor=2,
-                num_workers=4,  # self.prefetches,
+                num_workers=6,  # self.prefetches,
             ),
             num_prefetches=self.prefetches,
         )
@@ -308,12 +327,66 @@ class CustomRunner(dl.Runner):
                 # prefetch_factor=4,
                 # num_workers=4,  # self.prefetches,
                 prefetch_factor=2,
-                num_workers=4,  # self.prefetches,
+                num_workers=6,  # self.prefetches,
             ),
             num_prefetches=self.prefetches,
         )
 
         return {"train": train_dataloader, "valid": valid_dataloader, "infer": test_dataloader}
+
+    def get_snip_data(self, posts_bin, posts_meta, snip_ids):
+        snip_dict = {}
+
+        snip_samples = list(
+            posts_bin.find(
+                {
+                    "id": {"$in": snip_ids},
+                    "kind": {"$in": self.db_fields}, # .bin contains 3D kinds like 'smri', 'falff', 'dwi'. Scalar labels are stored in .meta
+                },
+                {"id": 1, "chunk": 1, "kind": 1, "chunk_id": 1},
+            )
+        )
+
+        for id in snip_ids:
+            # get ID's label and modalities
+            meta_for_id = list(
+                posts_meta.find(
+                    {
+                        "id": id,
+                    },
+                    list(self.meta_fields) + ["modalities"],
+                )
+            )
+
+            assert len(meta_for_id) != 0, f"No meta entries found for id {id}"
+            assert len(meta_for_id) < 2, f"More than one meta entry found for id {id}"
+
+            label = meta_for_id[0][self.meta_fields[0]]
+            modalities = meta_for_id[0]["modalities"]
+            id_modalities = set(modalities).intersection(set(self.db_fields))
+
+            # Get samples for this ID
+            samples_for_id = [
+                sample
+                for sample in snip_samples
+                if sample["id"] == id
+            ]
+
+            for mod in id_modalities:
+                data = make_serial(samples_for_id, mod)
+
+                for mod in id_modalities:
+                    data = make_serial(samples_for_id, mod)
+
+                    result = {
+                        "input": unit_interval_normalize(self.funcs["mytransform"](data).float()),
+                        "modality": mod,
+                        "label": torch.tensor(label).unsqueeze(0),
+                    }
+
+                    snip_dict[str(id)+'_'+mod] = result
+
+        return multimodal_collate({0:snip_dict}) # dict is expected in collate
 
     def get_model(self):
         model = ResNet3D(
@@ -323,6 +396,19 @@ class CustomRunner(dl.Runner):
         )
         # if self.model_path and os.path.exists(self.model_path):
         #     model.load_state_dict(torch.load(self.model_path))
+
+        if self.masked:
+            print("Using MultiMaskSNIPWrapper for masked training")
+            model = MultiMaskSNIPWrapper(
+                model,
+                sparsity=self._hparams["model"].get("sparsity", 0.9),
+            )
+
+            print("Initializing masks...")
+            snip_data, snip_modalities, snip_labels = self.snip_data
+            model.register_multimodal_masks(snip_modalities, snip_data, snip_labels)
+            print("Masks initialized.")
+
         return model
 
     def get_criterion(self):
@@ -378,19 +464,55 @@ class CustomRunner(dl.Runner):
             compute_on_call=False
         )
 
+        # --- CSV LOGGING SETUP ---
+        rank = distributed.get_rank()
+        loader_key = self.loader_key # e.g., "train", "valid"
+        self.csv_filename = os.path.join(
+            self._logdir, 
+            f"raw_preds_{loader_key}_rank_{rank}.csv"
+        )
+        file_exists = os.path.isfile(self.csv_filename) and os.path.getsize(self.csv_filename) > 0
+
+        self.csv_file = open(self.csv_filename, 'a', newline='')
+        self.csv_writer = csv.writer(self.csv_file)
+        
+        # Write header only if file is new
+        if not file_exists:
+            self.csv_writer.writerow(["epoch", "probability", "target"])
+
+
     def on_loader_end(self, runner):
         for key in ["loss", "accuracy", "learning rate"]:
             self.loader_metrics[key] = self.meters[key].compute()[0]
         self.loader_metrics["auc"] = self.meters["auc"].compute()[2]
+
+        if self.engine.is_ddp:
+            # Get world_size explicitly
+            world_size = distributed.get_world_size()
+            
+            for key in ["loss", "accuracy"]:
+                local_val = self.loader_metrics[key]
+                
+                # Create a tensor on the correct device
+                # self.engine.device is reliable for the current worker's device
+                val_tensor = torch.tensor([local_val], device=self.engine.device)
+                
+                # FIX: Pass world_size to mean_reduce
+                avg_tensor = distributed.mean_reduce(val_tensor, world_size)
+                self.loader_metrics[key] = avg_tensor.item()
+
+        # CSV Safety Close
+        if hasattr(self, 'csv_file') and self.csv_file:
+            self.csv_file.close()
 
         super().on_loader_end(runner)
 
     # model train/valid step
     def handle_batch(self, batch):
 
-        # Add synchronization before processing
-        if self.engine.is_ddp:
-            torch.cuda.synchronize()
+        # # Add synchronization before processing
+        # if self.engine.is_ddp:
+        #     torch.cuda.synchronize()
         
         if self.multimodal: #MM
             sample, modality, label = batch
@@ -401,7 +523,7 @@ class CustomRunner(dl.Runner):
         if self.model.training:
             if self.bit16:
                 with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
-                    y_hat = self.model.forward(sample)
+                    y_hat = self.model.forward(sample) if not self.masked else self.model.forward(sample, modality)
                     loss = self.criterion(y_hat, label.float())
                 scaler.scale(loss).backward()
                 scaler.step(self.optimizer)
@@ -409,7 +531,7 @@ class CustomRunner(dl.Runner):
                 scaler.update()
                 self.optimizer.zero_grad()
             else:
-                y_hat = self.model.forward(sample)
+                y_hat = self.model.forward(sample) if not self.masked else self.model.forward(sample, modality)
                 loss = self.criterion(y_hat, label.float())
                 loss.backward()
                 self.optimizer.step()
@@ -417,14 +539,21 @@ class CustomRunner(dl.Runner):
                 self.optimizer.zero_grad()
         else:
             with torch.no_grad():
-                y_hat = self.model.forward(sample)
+                y_hat = self.model.forward(sample) if not self.masked else self.model.forward(sample, modality)
                 loss = self.criterion(y_hat, label.float())
 
-        # Metrics calculation
+        # Metrics calculation and CSV logging
         with torch.no_grad():
             proba_preds = torch.sigmoid(y_hat)
             preds = proba_preds > 0.5
             accuracy = (preds == label).float().mean()
+            
+            # CSV logging: Move to CPU / Numpy
+            probs_np = proba_preds.detach().cpu().numpy().flatten()
+            targets_np = label.detach().cpu().numpy().flatten()
+            epochs_np = [self.epoch_step] * len(probs_np)
+            rows = zip(epochs_np, probs_np, targets_np)
+            self.csv_writer.writerows(rows)
 
 
         self.batch_metrics.update({
@@ -491,7 +620,7 @@ def main(cfg: DictConfig):
         / 256
     )
     wandb_experiment = (
-        f"{experiment_name}: {collections}, {dbfields}-{metafields}"
+        f"{experiment_name}: {collections}, {dbfields}-{metafields}, masked={cfg.model.get('masked', False)}, sps={cfg.model.get('sparsity', None)}"
     )
 
     # Set database parameters
@@ -504,7 +633,7 @@ def main(cfg: DictConfig):
     #     loadcheckpoint: False
     #     model: "../logs/tmp/new_test_fbirn_falff/model.last.pth"
     #     logdir: "./logs/tmp/new_test_fbirn_falff/"
-    logdir = f"{cfg.paths.logdir}/{experiment_name}_{collections}_{dbfields}_{metafields}"
+    logdir = f"{cfg.paths.logdir}/{experiment_name}_{collections}_{dbfields}_{metafields}_masked_{cfg.model.get('masked', False)}_sps_{cfg.model.get('sparsity', None)}"
     os.makedirs(logdir, exist_ok=True)
 
     # Set hparams
