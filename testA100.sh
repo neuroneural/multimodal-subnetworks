@@ -25,36 +25,84 @@ source /data/users2/ppopov1/miniconda/bin/activate catalyst12
 echo "Using python from: $(which python)"
 echo "Conda environment: $CONDA_DEFAULT_ENV"
 
-DATASETS=(
-  "fbirn"
-  "ukb"
-)
+# old code for array job
+# TASK_ID=${SLURM_ARRAY_TASK_ID:-0}
 
-MODALITY=(
-  "dwi"
-  "falff"
-  "smri"
-)
+# dataset_id=$(( TASK_ID / ${#MODALITY[@]} ))
+# modality_id=$(( TASK_ID % ${#MODALITY[@]} ))
 
-TASK_ID=${SLURM_ARRAY_TASK_ID:-0}
+# Running ukb dataset
+dataset = "ukb"
 
-dataset_id=$(( TASK_ID / ${#MODALITY[@]} ))
-modality_id=$(( TASK_ID % ${#MODALITY[@]} ))
+python train_script_rev.py \
+  --config-name new_conf \
+  --config-dir conf \
+  experiment.experiment_name="baselines" \
+  experiment.collections=$dataset \
+  experiment.dbfields="[falff]" \
+  experiment.metafields="[gender_encoded]" \
+  model.masked=False 
+python train_script_rev.py \
+  --config-name new_conf \
+  --config-dir conf \
+  experiment.experiment_name="masked" \
+  experiment.collections=$dataset \
+  experiment.dbfields="[falff]" \
+  experiment.metafields="[gender_encoded]" \
+  model.masked=True 
 
-echo "Running with dataset: ${DATASETS[$dataset_id]}"
-echo "Running with modality: ${MODALITY[$modality_id]}"
+python train_script_rev.py \
+  --config-name new_conf \
+  --config-dir conf \
+  experiment.experiment_name="baselines" \
+  experiment.collections=$dataset \
+  experiment.dbfields="[dwi]" \
+  experiment.metafields="[gender_encoded]" \
+  model.masked=False 
+python train_script_rev.py \
+  --config-name new_conf \
+  --config-dir conf \
+  experiment.experiment_name="masked" \
+  experiment.collections=$dataset \
+  experiment.dbfields="[dwi]" \
+  experiment.metafields="[gender_encoded]" \
+  model.masked=True 
 
-# python train_script_rev.py \
-#   --config-name new_conf \
-#   --config-dir conf \
-#   experiment.experiment_name="baselines" \
-#   experiment.collections="${DATASETS[$dataset_id]}" \
-#   experiment.dbfields="[${MODALITY[$modality_id]}]" \
-#   experiment.metafields="[gender_encoded]"
+python train_script_rev.py \
+  --config-name new_conf \
+  --config-dir conf \
+  experiment.experiment_name="baselines" \
+  experiment.collections=$dataset \
+  experiment.dbfields="[smri]" \
+  experiment.metafields="[gender_encoded]" \
+  model.masked=False 
+python train_script_rev.py \
+  --config-name new_conf \
+  --config-dir conf \
+  experiment.experiment_name="masked" \
+  experiment.collections=$dataset \
+  experiment.dbfields="[smri]" \
+  experiment.metafields="[gender_encoded]" \
+  model.masked=True 
 
+python train_script_rev.py \
+  --config-name new_conf \
+  --config-dir conf \
+  experiment.experiment_name="baselines" \
+  experiment.collections=$dataset \
+  experiment.dbfields="[falff, smri, dwi]" \
+  experiment.metafields="[gender_encoded]" \
+  model.masked=False 
+python train_script_rev.py \
+  --config-name new_conf \
+  --config-dir conf \
+  experiment.experiment_name="masked" \
+  experiment.collections=$dataset \
+  experiment.dbfields="[falff, smri, dwi]" \
+  experiment.metafields="[gender_encoded]" \
+  model.masked=True 
 
 # RERUNNING ALL
-
 python train_script_rev.py \
   --config-name new_conf \
   --config-dir conf \
