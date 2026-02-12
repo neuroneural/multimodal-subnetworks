@@ -34,22 +34,22 @@ echo "Conda environment: $CONDA_DEFAULT_ENV"
 # Running ukb dataset
 dataset = "ukb"
 
-python train_script_rev.py \
-  --config-name new_conf \
-  --config-dir conf \
-  experiment.experiment_name="baselines" \
-  experiment.collections=$dataset \
-  experiment.dbfields="[falff]" \
-  experiment.metafields="[gender_encoded]" \
-  model.masked=False 
-python train_script_rev.py \
-  --config-name new_conf \
-  --config-dir conf \
-  experiment.experiment_name="masked" \
-  experiment.collections=$dataset \
-  experiment.dbfields="[falff]" \
-  experiment.metafields="[gender_encoded]" \
-  model.masked=True 
+#python train_script_rev.py \
+#  --config-name new_conf \
+#  --config-dir conf \
+#  experiment.experiment_name="baselines" \
+#  experiment.collections=$dataset \
+#  experiment.dbfields="[falff]" \
+#  experiment.metafields="[gender_encoded]" \
+#  model.masked=False 
+#python train_script_rev.py \
+#  --config-name new_conf \
+#  --config-dir conf \
+#  experiment.experiment_name="masked" \
+#  experiment.collections=$dataset \
+#  experiment.dbfields="[falff]" \
+#  experiment.metafields="[gender_encoded]" \
+#  model.masked=True 
 
 python train_script_rev.py \
   --config-name new_conf \
@@ -103,22 +103,22 @@ python train_script_rev.py \
   model.masked=True 
 
 # RERUNNING ALL
-python train_script_rev.py \
-  --config-name new_conf \
-  --config-dir conf \
-  experiment.experiment_name="baselines" \
-  experiment.collections="fbirn" \
-  experiment.dbfields="[falff]" \
-  experiment.metafields="[gender_encoded]" \
-  model.masked=False 
-python train_script_rev.py \
-  --config-name new_conf \
-  --config-dir conf \
-  experiment.experiment_name="masked" \
-  experiment.collections="fbirn" \
-  experiment.dbfields="[falff]" \
-  experiment.metafields="[gender_encoded]" \
-  model.masked=True 
+#python train_script_rev.py \
+#  --config-name new_conf \
+#  --config-dir conf \
+#  experiment.experiment_name="baselines" \
+#  experiment.collections="fbirn" \
+#  experiment.dbfields="[falff]" \
+#  experiment.metafields="[gender_encoded]" \
+#  model.masked=False 
+#python train_script_rev.py \
+#  --config-name new_conf \
+#  --config-dir conf \
+#  experiment.experiment_name="masked" \
+#  experiment.collections="fbirn" \
+#  experiment.dbfields="[falff]" \
+#  experiment.metafields="[gender_encoded]" \
+#  model.masked=True 
 
 # python train_script_rev.py \
 #   --config-name new_conf \

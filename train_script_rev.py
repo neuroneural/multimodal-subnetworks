@@ -394,8 +394,6 @@ class CustomRunner(dl.Runner):
             n_classes=self.n_classes, 
             channels=self.n_channels
         )
-        # if self.model_path and os.path.exists(self.model_path):
-        #     model.load_state_dict(torch.load(self.model_path))
 
         if self.masked:
             print("Using MultiMaskSNIPWrapper for masked training")
@@ -404,10 +402,41 @@ class CustomRunner(dl.Runner):
                 sparsity=self._hparams["model"].get("sparsity", 0.9),
             )
 
-            print("Initializing masks...")
-            snip_data, snip_modalities, snip_labels = self.snip_data
-            model.register_multimodal_masks(snip_modalities, snip_data, snip_labels)
-            print("Masks initialized.")
+            # Check if we should use smart initialization from unimodal models
+            use_smart_init = self._hparams["model"].get("smart_init", False)
+            unimodal_paths = self._hparams["model"].get("unimodal_model_paths", None)
+            
+            if use_smart_init and unimodal_paths:
+                print("Using smart initialization from unimodal models...")
+                
+                # Load unimodal model state_dicts
+                unimodal_checkpoints = {}
+                for mod_id, path in unimodal_paths.items():
+                    if os.path.exists(path):
+                        print(f"Loading unimodal model for modality {mod_id} from {path}")
+                        # Load the checkpoint - handle both wrapped and unwrapped models
+                        checkpoint = torch.load(path, map_location='cpu')
+                        
+                        # If the unimodal model was also wrapped, extract the base model state_dict
+                        if 'model.model.' in list(checkpoint.keys())[0]:
+                            # Model was wrapped, need to extract nested model
+                            unimodal_checkpoints[mod_id] = checkpoint
+                        else:
+                            # Model wasn't wrapped (shouldn't happen for masked models)
+                            unimodal_checkpoints[mod_id] = checkpoint
+                    else:
+                        raise FileNotFoundError(f"Unimodal model path not found: {path}")
+                
+                # Initialize from unimodal models
+                model.initialize_from_unimodal_models(unimodal_checkpoints)
+                print("Smart initialization complete!")
+                
+            else:
+                # Standard SNIP initialization from scratch
+                print("Initializing masks from scratch using SNIP...")
+                snip_data, snip_modalities, snip_labels = self.snip_data
+                model.register_multimodal_masks(snip_modalities, snip_data, snip_labels)
+                print("Masks initialized.")
 
         return model
 

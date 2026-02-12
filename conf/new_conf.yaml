@@ -17,6 +17,15 @@ model:
   masked: False
   sparsity: 0.7  # 70% sparsity for masked training
   snip_batch_size: 20
+
+  # load pretrained unimodal models for initialization
+  unimodal_model_paths:
+    0: "./logs/unimodal_mod0/fold_0/checkpoints/best.pth"  # modality 0 (e.g., smri)
+    1: "./logs/unimodal_mod1/fold_0/checkpoints/best.pth"  # modality 1 (e.g., falff)
+    2: "./logs/unimodal_mod2/fold_0/checkpoints/best.pth"  # modality 2 (e.g., dwi)
+  smart_init: True
+
+
   n_classes: 1  # Binary gender classification
   model_channels: 64  # ResNet base channels
   model_label: "_resnet3d_gender_64base"

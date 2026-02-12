@@ -167,3 +167,10 @@ jupyter_node*
 jnode-*
 env.yml
 __stuff
+minimal_fmri_classification/
+prep/
+mongotest/
+labels_serialized.txt
+labels_meta.txt
+file_structure.txt
+
