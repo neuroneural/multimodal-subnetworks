@@ -408,22 +408,16 @@ class CustomRunner(dl.Runner):
             
             if use_smart_init and unimodal_paths:
                 print("Using smart initialization from unimodal models...")
+                print(f"Unimodal paths config: {unimodal_paths}")
                 
                 # Load unimodal model state_dicts
                 unimodal_checkpoints = {}
                 for mod_id, path in unimodal_paths.items():
+                    print(f"Processing modality: {mod_id}, path: {path}")
                     if os.path.exists(path):
                         print(f"Loading unimodal model for modality {mod_id} from {path}")
-                        # Load the checkpoint - handle both wrapped and unwrapped models
                         checkpoint = torch.load(path, map_location='cpu')
-                        
-                        # If the unimodal model was also wrapped, extract the base model state_dict
-                        if 'model.model.' in list(checkpoint.keys())[0]:
-                            # Model was wrapped, need to extract nested model
-                            unimodal_checkpoints[mod_id] = checkpoint
-                        else:
-                            # Model wasn't wrapped (shouldn't happen for masked models)
-                            unimodal_checkpoints[mod_id] = checkpoint
+                        unimodal_checkpoints[mod_id] = checkpoint
                     else:
                         raise FileNotFoundError(f"Unimodal model path not found: {path}")
                 
@@ -552,6 +546,7 @@ class CustomRunner(dl.Runner):
         if self.model.training:
             if self.bit16:
                 with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
+                    print(f"[DEBUG] sample shape: {sample.shape}, modality: {modality}")
                     y_hat = self.model.forward(sample) if not self.masked else self.model.forward(sample, modality)
                     loss = self.criterion(y_hat, label.float())
                 scaler.scale(loss).backward()
@@ -560,6 +555,7 @@ class CustomRunner(dl.Runner):
                 scaler.update()
                 self.optimizer.zero_grad()
             else:
+                print(f"[DEBUG] sample shape: {sample.shape}, modality: {modality}")
                 y_hat = self.model.forward(sample) if not self.masked else self.model.forward(sample, modality)
                 loss = self.criterion(y_hat, label.float())
                 loss.backward()

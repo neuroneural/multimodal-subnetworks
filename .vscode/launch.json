@@ -12,9 +12,9 @@
             ],
             "console": "integratedTerminal",
             "env": {
-                "HYDRA_FULL_ERROR": "1"  // Ensures full error stack traces
+                "HYDRA_FULL_ERROR": "1"
             },
-            "justMyCode": false  // Allows stepping into library code if needed
+            "justMyCode": false
         },
         {
             "name": "Python: Current File",
@@ -22,6 +22,46 @@
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal"
+        }, 
+        {
+            "name": "Debug train_script_rev (mmsn env)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/train_script_rev.py",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "python": "/data/users2/jwardell1/miniconda3/envs/mmsn/bin/python",
+            "args": [
+                "--config-name", "test_conf",
+                "--config-dir", "conf",
+                "experiment.experiment_name=test",
+                "experiment.collections=ukb",
+                "experiment.dbfields=[falff, smri, dwi]",
+                "experiment.metafields=[gender_encoded]"
+            ],
+            "env": {
+                "HYDRA_FULL_ERROR": "1",
+                "CUDA_VISIBLE_DEVICES": "0"
+            }
+        },
+        {
+            "name": "Debug FBIRN Smart Init",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/train_script_rev.py",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "python": "/data/users2/jwardell1/miniconda3/envs/mmsn/bin/python",
+            "args": [
+                "--config-name", "fbirn_smart_init",
+                "--config-dir", "conf"
+            ],
+            "env": {
+                "HYDRA_FULL_ERROR": "1",
+                "CUDA_VISIBLE_DEVICES": "0"
+            }
         }
     ]
 }

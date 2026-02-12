@@ -7,46 +7,40 @@ mongo:
   index_id: "id"
   
 wandb:
-  team: "neuroneural"  # Your specified team name
-  project: "holographic_project"  # Your requested project name
+  team: "neuroneural"
+  project: "holographic_project"
 
 bit16: False
 
 model:
-  # config_file: /data/users2/jwardell1/multimodal-subnetworks/conf/resnet3d_gender_bn_64base_2.2.2.2_exp01.yaml
   masked: False
-  sparsity: 0.7  # 70% sparsity for masked training
+  sparsity: 0.7
   snip_batch_size: 20
+  smart_init: False  # Set to False by default, override via command line or dedicated config
 
-  # load pretrained unimodal models for initialization
-  unimodal_model_paths:
-    0: "./logs/unimodal_mod0/fold_0/checkpoints/best.pth"  # modality 0 (e.g., smri)
-    1: "./logs/unimodal_mod1/fold_0/checkpoints/best.pth"  # modality 1 (e.g., falff)
-    2: "./logs/unimodal_mod2/fold_0/checkpoints/best.pth"  # modality 2 (e.g., dwi)
-  smart_init: True
+  # Default paths (will be overridden when using smart_init)
+  unimodal_model_paths: {}
 
-
-  n_classes: 1  # Binary gender classification
-  model_channels: 64  # ResNet base channels
+  n_classes: 1
+  model_channels: 64
   model_label: "_resnet3d_gender_64base"
   volume_shape: [256, 256, 256]
   maxshape: 300
   optimize_inline: False
-  use_groupnorm: False  # Using BatchNorm
-  use_me: True  # Memory efficient version
-  loss_weight: [0.5, 0.5]  # Balanced weights
+  use_groupnorm: False
+  use_me: True
+  loss_weight: [0.5, 0.5]
 
 paths:
   loadcheckpoint: False
-  # model: "./logs/test/model.last.pth" # set loadcheckpoint to True to use
-  logdir: "./logs/" # use experiment.experiment_name instead
+  logdir: "./logs/"
 
 client_creator:
   crop_tensor: False
-  normalize: False  # Data already normalized
+  normalize: False
 
 experiment:
-  experiment_name: test # used in wandb name and logdir name
+  experiment_name: test
   cv_seed: 42
   cv_folds: 10
   lr_scale: 0.01
@@ -64,10 +58,9 @@ experiment:
 
 resnet_specific:
   block_type: "basic"
-  layers: [2, 2, 2, 2]  # ResNet architecture
+  layers: [2, 2, 2, 2]
   initial_stride: 2
   initial_kernel: 7
   initial_pool: True
   dropout: 0.2
   use_checkpointing: True
-

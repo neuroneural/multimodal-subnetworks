@@ -1,0 +1,20 @@
+defaults:
+  - new_conf
+
+experiment:
+  experiment_name: debug_fbirn_smart_init
+  collections: fbirn
+  dbfields: [falff, smri, dwi]  # All three modalities
+  metafields: [gender_encoded]
+  cv_folds: 10
+  epochs: 60
+
+model:
+  masked: True
+  sparsity: 0.7
+  smart_init: True
+  unimodal_model_paths:
+    # IMPORTANT: Keys must match the modality strings in your database
+    falff: "/data/users2/ppopov1/multimodal-subnetworks/logs/masked_fbirn_('falff',)_('gender_encoded',)_masked_True_sps_0.7/fold_0/model.best.pth"
+    smri: "/data/users2/ppopov1/multimodal-subnetworks/logs/masked_fbirn_('smri',)_('gender_encoded',)_masked_True_sps_0.7/fold_0/model.best.pth"
+    dwi: "/data/users2/ppopov1/multimodal-subnetworks/logs/masked_fbirn_('dwi',)_('gender_encoded',)_masked_True_sps_0.7/fold_0/model.best.pth"
