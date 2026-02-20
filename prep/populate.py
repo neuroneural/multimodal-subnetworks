@@ -1,240 +1,185 @@
 import os
+import io
+import glob
+import torch
 import nibabel as nib
 import numpy as np
-from glob import glob
-from pymongo import MongoClient
-from concurrent.futures import ThreadPoolExecutor
-from dask import delayed, compute
 import bson
-import io
-import torch
 import pandas as pd
+from pymongo import MongoClient
 
-print("=== Starting FBIRN Data Pipeline ===")
+# config
+MONGO_HOST = "10.245.12.58"
+DB_NAME = "multimodalSubnetworks"
+BIN_COLLECTION = "ukb.bin"
+META_COLLECTION = "ukb.meta"
+FALFF_DIR = "/data/users2/jwardell1/multimodal-subnetworks/groupedData/ukb_falff/images/conformed"
+SMRI_DIR = "/data/users2/jwardell1/multimodal-subnetworks/groupedData/ukb_smri/images/conformed"
+DEMOGRAPHICS_CSV = "/data/users2/jwardell1/multimodal-subnetworks/prep/my_ukb_data.csv"
+CHUNK_SIZE_MB = 10
 
-# Configuration
-MONGOHOST = "10.245.12.58"
-MONGODB = "multimodalSubnetworks"
-BASE_PATH = "/data/users2/jwardell1/multimodal-subnetworks/groupedData"
-CHUNK_SIZE = 10  # MB
-DEMOGRAPHICS_FILE = "/data/users2/jwardell1/multimodal-subnetworks/prep/" + 'FBIRN_PANSS_Details.xlsx'
-
-# Initialize MongoDB Connection
-print(f"\nConnecting to MongoDB at {MONGOHOST}...")
-try:
-    client = MongoClient(f"{MONGOHOST}:27017", serverSelectionTimeoutMS=5000)
-    client.server_info()  # Test connection
-    db = client[MONGODB]
-    print("✓ MongoDB connection established")
-except Exception as e:
-    print(f"✗ MongoDB connection failed: {e}")
-    exit(1)
-
-# Load and Process Demographic Data
-print(f"\nLoading demographics from {DEMOGRAPHICS_FILE}...")
-try:
-    demographics_df = pd.read_excel(DEMOGRAPHICS_FILE)
-    print(f"✓ Loaded {len(demographics_df)} records")
-    
-    # Standardize gender values
-    demographics_df['gender_clean'] = (
-        demographics_df['Demographics_sDEMOG_GENDER']
-        .str.upper()
-        .str.strip()
-        .replace({'MALE': 'M', 'FEMALE': 'F'})
-    )
-    
-    # Encode gender numerically
-    gender_encoded = np.where(
-        demographics_df['gender_clean'] == 'M', 0,
-        np.where(
-            demographics_df['gender_clean'] == 'F', 1,
-            -1  # Invalid
-        )
-    ).astype(np.uint8)
-    
-    print("Gender Distribution:")
-    print(pd.Series(gender_encoded).value_counts()
-          .rename(index={0: 'Male', 1: 'Female', -1: 'Invalid'}))
-    
-    # Create ID mapping
-    gender_mapping = {}
-    for idx, row in demographics_df.iterrows():
-        original_id = str(row['SubjectID']).strip()
-        clean_id = original_id.lstrip('0')  # Remove leading zeros
-        
-        # Store gender data
-        gender_data = {
-            'original': row['Demographics_sDEMOG_GENDER'],
-            'encoded': int(gender_encoded[idx])  # Convert numpy to native int
-        }
-        
-        # Map both ID formats
-        gender_mapping[original_id] = gender_data
-        if clean_id != original_id:
-            gender_mapping[clean_id] = gender_data
-    
-    print(f"\n✓ Created gender mapping for {len(demographics_df)} subjects")
-    print("Sample mappings:", {k: gender_mapping[k] for k in list(gender_mapping.keys())[:3]})
-
-except Exception as e:
-    print(f"✗ Failed to process demographics: {e}")
-    exit(1)
-
-# Core Functions
-def qnormalize(img, qmin=0.02, qmax=0.98):
-    """Quantile normalization with clipping"""
-    qlow = np.quantile(img, qmin)
-    qhigh = np.quantile(img, qmax)
-    img = (img - qlow) / (qhigh - qlow)
-    return np.clip(img, 0, 1)
+def qnormalize(img, qmin=0.01, qmax=0.99):
+    img = (img - img.quantile(qmin)) / (img.quantile(qmax) - img.quantile(qmin))
+    return img
 
 def tensor2bin(tensor):
-    """Serialize tensor to binary"""
+    tensor_1d = (tensor * 255).clamp(0, 255).to(torch.uint8)
     buffer = io.BytesIO()
-    torch.save(tensor.to(torch.uint8), buffer)
+    torch.save(tensor_1d, buffer)
     return buffer.getvalue()
 
-def chunk_binobj(tensor_compressed, idx, kind, chunksize):
-    """Split binary data into chunks"""
+def chunk_binobj(tensor_binary, idx, subject_id, kind, chunksize):
     chunksize_bytes = chunksize * 1024 * 1024
-    num_chunks = len(tensor_compressed) // chunksize_bytes + 1
+    num_chunks = len(tensor_binary) // chunksize_bytes
+    if len(tensor_binary) % chunksize_bytes != 0:
+        num_chunks += 1
+    chunks = []
     for i in range(num_chunks):
         start = i * chunksize_bytes
-        end = min((i + 1) * chunksize_bytes, len(tensor_compressed))
-        yield {
+        end = min((i + 1) * chunksize_bytes, len(tensor_binary))
+        chunk = tensor_binary[start:end]
+        chunks.append({
             "id": idx,
+            "subject_id": subject_id,
             "chunk_id": i,
             "kind": kind,
-            "chunk": bson.Binary(tensor_compressed[start:end]),
-        }
+            "chunk": bson.Binary(chunk),
+        })
+    return chunks
 
-def process_subject(image_path, collection_name, id):
-    try:
-        print(f"\n--- Processing Subject {id} ---")
-        print(f"Image: {os.path.basename(image_path)}")
-        
-        # Load and process image
-        img = np.asarray(nib.load(image_path).dataobj)
-        img_norm = (qnormalize(img) * 255).astype(np.uint8)
-        img_bin = tensor2bin(torch.from_numpy(img_norm))
-        print(f"✓ Processed image ({len(img_bin)/1024:.1f} KB binary)")
-        
-        # Extract and match ID
-        filename = os.path.basename(image_path)
-        file_id = filename.split('_')[0]
-        clean_id = file_id.lstrip('0')
-        
-        print(f"Extracted IDs: File={file_id}, Cleaned={clean_id}")
-        
-        # Find matching gender data
-        gender_data = None
-        matching_id = None
-        for id_format in [file_id, clean_id]:
-            if id_format in gender_mapping:
-                gender_data = gender_mapping[id_format]
-                matching_id = id_format
-                print(f"✓ Matched using ID format: {id_format}")
-                break
-        
-        if not gender_data:
-            available_ids = list(gender_mapping.keys())[:5]
-            print(f'\n\n\n\n\t\t\tfile_id')
-            raise ValueError(f"No gender match. Tried: {file_id}, {clean_id}\nFirst 5 available: {available_ids}")
-            
-        
-        if gender_data['encoded'] not in {0, 1}:
-            raise ValueError(f"Invalid gender code: {gender_data}")
-        
-        print(f"Gender: {gender_data}")
-        
-        # Create metadata document
-        meta = {
-            "id": id,
-            "collection": collection_name,
-            "filename": filename,
-            "id_formats": {
-                "from_filename": file_id,
-                "cleaned": clean_id,
-                "matched": matching_id
-            },
-            "gender": gender_data,
-            "data_types": {
-                "image": "Normalized (0-255 uint8)",
-                "label": "Binary (0: Male, 1: Female, uint8)"
-            },
-            "processing_log": {
-                "normalization": "Quantile (0.02-0.98)",
-                "chunk_size_mb": CHUNK_SIZE,
-                "status": "processed"
-            }
-        }
+def load_nifti(filepath):
+    img = nib.load(filepath)
+    data = img.get_fdata(dtype=np.float32)
+    tensor = torch.from_numpy(data)
+    tensor = qnormalize(tensor)
+    return tensor
 
-        # MongoDB operations
-        col_bin = db[f"{collection_name}.bin"]
-        col_meta = db[f"{collection_name}.meta"]
-        
-        print("Inserting metadata...")
-        meta_result = col_meta.insert_one(meta)
-        print(f"✓ Metadata inserted: {meta_result.inserted_id}")
-        
-        # Insert binary data
-        gender_value = gender_data['encoded']  # From your existing code
-        gender_bin = tensor2bin(torch.tensor([gender_value], dtype=torch.long))  # Wrap in list to make 1D
-        
-        gender_chunks = list(chunk_binobj(gender_bin, id, "gender", CHUNK_SIZE))
-        img_chunks = list(chunk_binobj(img_bin, id, "image", CHUNK_SIZE))   
-        print(f"Inserting {len(img_chunks)} binary chunks...")
-        bin_result = col_bin.insert_many(img_chunks + gender_chunks)
-        print(f"✓ Inserted {len(bin_result.inserted_ids)} chunks")
-        
-        return True
-        
-    except Exception as e:
-        print(f"✗ Processing failed: {str(e)}")
-        return False
-
-
-
-# Main Execution
-if __name__ == "__main__":
-    print("\n=== Starting Main Processing ===")
+def load_demographics_for_subjects(csv_path, subject_ids):
+    """Load demographics only for specific subjects"""
+    print(f"loading demographics for {len(subject_ids)} subjects...")
     
-    # Process each collection
-    collections = [d for d in os.listdir(BASE_PATH) 
-                  if os.path.isdir(os.path.join(BASE_PATH, d))]
+    # Read only needed columns
+    df = pd.read_csv(csv_path, usecols=['eid', 'sex_f31_0_0'])
     
-    for collection in collections:
-        print(f"\nProcessing Collection: {collection}")
-        image_dir = os.path.join(BASE_PATH, collection, "images")
-        images = glob(os.path.join(image_dir, "*.nii"))
-        if not images:
-            images = glob(os.path.join(image_dir, "*.nii.gz"))
-        
-        print(f"Found {len(images)} images")
-        if not images:
-            print("✗ No images found! Check file pattern.")
+    # Convert to set for faster lookup
+    subject_set = set(subject_ids)
+    
+    demo_dict = {}
+    for _, row in df.iterrows():
+        sub_id = str(int(row['eid']))  # Convert to int first to remove .0, then to string
+        if sub_id not in subject_set:
             continue
             
-        # Process in parallel
-        with ThreadPoolExecutor() as executor:
-            futures = []
-            for idx, img_path in enumerate(images):
-                futures.append(executor.submit(
-                    process_subject, 
-                    img_path, 
-                    collection, 
-                    idx
-                ))
-            
-            # Track progress
-            results = [f.result() for f in futures]
-            success_rate = sum(results)/len(results)
-            print(f"\nCollection {collection} Results:")
-            print(f"Success: {sum(results)}/{len(results)} ({success_rate:.1%})")
+        gender_code = row['sex_f31_0_0']
+        if pd.isna(gender_code):
+            continue
+        gender_code = int(gender_code)
+        
+        if gender_code == 0:
+            gender = 'M'
+            gender_encoded = 0
+        elif gender_code == 1:
+            gender = 'F'
+            gender_encoded = 1
+        else:
+            continue
+        demo_dict[sub_id] = {'gender': gender, 'gender_encoded': gender_encoded}
     
-    print("\n=== Processing Complete ===")
-    print("Final checks:")
-    print(f"Metadata documents: {db['fbirn_falff.meta'].count_documents({})}")
-    print(f"Binary chunks: {db['fbirn_falff.bin'].count_documents({})}")
+    print(f"found demographics for {len(demo_dict)} subjects")
+    return demo_dict
 
+def main():
+    client = MongoClient(MONGO_HOST)
+    db = client[DB_NAME]
+    bin_coll = db[BIN_COLLECTION]
+    meta_coll = db[META_COLLECTION]
+
+    # Drop and recreate collections
+    print("dropping existing collections...")
+    bin_coll.drop()
+    meta_coll.drop()
+
+    # Get all subjects with fALFF
+    print("finding fALFF subjects...")
+    falff_files = glob.glob(os.path.join(FALFF_DIR, "*_fALFF.nii"))
+    falff_subjects = {os.path.basename(f).replace("_fALFF.nii", ""): f for f in falff_files}
+    print(f"found {len(falff_subjects)} fALFF subjects")
+
+    # Get all subjects with sMRI
+    print("finding sMRI subjects...")
+    smri_files = glob.glob(os.path.join(SMRI_DIR, "*_smri.nii.gz"))
+    smri_subjects = {os.path.basename(f).replace("_smri.nii.gz", ""): f for f in smri_files}
+    print(f"found {len(smri_subjects)} sMRI subjects")
+
+    # Get union of all subjects
+    all_subjects = sorted(set(falff_subjects.keys()) | set(smri_subjects.keys()))
+    print(f"total unique subjects: {len(all_subjects)}")
+
+    # Load demographics only for these subjects
+    demographics = load_demographics_for_subjects(DEMOGRAPHICS_CSV, all_subjects)
+
+    # Filter to subjects with demographics
+    subjects_with_demo = [s for s in all_subjects if s in demographics]
+    print(f"subjects with demographics: {len(subjects_with_demo)}")
+
+    # Process each subject
+    inserted = 0
+    skipped = 0
+
+    for idx, subject_id in enumerate(subjects_with_demo):
+        try:
+            modalities = []
+            bin_docs = []
+
+            # Process fALFF if available
+            if subject_id in falff_subjects:
+                tensor = load_nifti(falff_subjects[subject_id])
+                tensor_binary = tensor2bin(tensor)
+                chunks = chunk_binobj(tensor_binary, idx, subject_id, "falff", CHUNK_SIZE_MB)
+                bin_docs.extend(chunks)
+                modalities.append("falff")
+
+            # Process sMRI if available
+            if subject_id in smri_subjects:
+                tensor = load_nifti(smri_subjects[subject_id])
+                tensor_binary = tensor2bin(tensor)
+                chunks = chunk_binobj(tensor_binary, idx, subject_id, "smri", CHUNK_SIZE_MB)
+                bin_docs.extend(chunks)
+                modalities.append("smri")
+
+            # Insert binary data
+            if bin_docs:
+                bin_coll.insert_many(bin_docs)
+
+            # Create meta entry
+            demo = demographics[subject_id]
+            meta_doc = {
+                "id": idx,
+                "subject_id": subject_id,
+                "gender": demo["gender"],
+                "modalities": sorted(modalities),
+                "data_types": {
+                    "image": "Normalized (0-255 uint8)",
+                    "label": "Binary (0: Male, 1: Female, uint8)"
+                },
+                "normalization": "Quantile (0.01-0.99)",
+                "chunk_size_mb": CHUNK_SIZE_MB,
+                "lz4_compressed": False,
+                "gender_encoded": demo["gender_encoded"]
+            }
+            meta_coll.insert_one(meta_doc)
+
+            inserted += 1
+            if inserted % 100 == 0:
+                print(f"[{idx}] inserted {inserted} subjects...")
+
+        except Exception as e:
+            print(f"ERROR on {subject_id}: {e}")
+            skipped += 1
+
+    print(f"\ndone. inserted={inserted}, skipped={skipped}")
+    print(f"total bin documents: {bin_coll.count_documents({})}")
+    print(f"total meta documents: {meta_coll.count_documents({})}")
+
+if __name__ == "__main__":
+    main()
