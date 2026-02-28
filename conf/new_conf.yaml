@@ -19,7 +19,10 @@ model:
   smart_init: False  # Set to False by default, override via command line or dedicated config
 
   # Default paths (will be overridden when using smart_init)
-  unimodal_model_paths: {}
+  unimodal_model_paths:
+    falff: ""
+    smri: ""
+    dwi: ""
 
   n_classes: 1
   model_channels: 64
@@ -48,9 +51,9 @@ experiment:
   numcubes: 1
   numvolumes: 8
   weights: 1
-  databases: "MindfulTensors"
-  collections: "fbirn"
-  dbfields: ["falff"]
+  databases: "multimodalSubnetworks"
+  collections: "ukb"
+  dbfields: ["smri"]
   metafields: ["gender_encoded"]
   epochs: 60
   prefetches: 16

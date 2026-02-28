@@ -191,6 +191,7 @@ class CustomRunner(dl.Runner):
         all_ids = posts_meta.distinct( # pull all unique IDs (subjects) with at least one modality in db_fields
             "id",
             {'modalities': {"$in": self.db_fields}}
+            #{'modalities': {"$all": self.db_fields}}
         )
         all_ids = sorted(all_ids)
         # print(all_ids)
@@ -546,7 +547,6 @@ class CustomRunner(dl.Runner):
         if self.model.training:
             if self.bit16:
                 with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
-                    print(f"[DEBUG] sample shape: {sample.shape}, modality: {modality}")
                     y_hat = self.model.forward(sample) if not self.masked else self.model.forward(sample, modality)
                     loss = self.criterion(y_hat, label.float())
                 scaler.scale(loss).backward()
@@ -555,7 +555,6 @@ class CustomRunner(dl.Runner):
                 scaler.update()
                 self.optimizer.zero_grad()
             else:
-                print(f"[DEBUG] sample shape: {sample.shape}, modality: {modality}")
                 y_hat = self.model.forward(sample) if not self.masked else self.model.forward(sample, modality)
                 loss = self.criterion(y_hat, label.float())
                 loss.backward()

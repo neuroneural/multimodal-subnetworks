@@ -15,6 +15,7 @@ BIN_COLLECTION = "ukb.bin"
 META_COLLECTION = "ukb.meta"
 FALFF_DIR = "/data/users2/jwardell1/multimodal-subnetworks/groupedData/ukb_falff/images/conformed"
 SMRI_DIR = "/data/users2/jwardell1/multimodal-subnetworks/groupedData/ukb_smri/images/conformed"
+DWI_DIR = "/data/users2/jwardell1/multimodal-subnetworks/groupedData/ukb_dwi/images/conformed"
 DEMOGRAPHICS_CSV = "/data/users2/jwardell1/multimodal-subnetworks/prep/my_ukb_data.csv"
 CHUNK_SIZE_MB = 10
 
@@ -66,7 +67,7 @@ def load_demographics_for_subjects(csv_path, subject_ids):
     
     demo_dict = {}
     for _, row in df.iterrows():
-        sub_id = str(int(row['eid']))  # Convert to int first to remove .0, then to string
+        sub_id = str(int(row['eid']))
         if sub_id not in subject_set:
             continue
             
@@ -95,24 +96,30 @@ def main():
     meta_coll = db[META_COLLECTION]
 
     # Drop and recreate collections
-    print("dropping existing collections...")
+    print("Dropping existing collections...")
     bin_coll.drop()
     meta_coll.drop()
 
     # Get all subjects with fALFF
-    print("finding fALFF subjects...")
+    print("\nFinding fALFF subjects...")
     falff_files = glob.glob(os.path.join(FALFF_DIR, "*_fALFF.nii"))
     falff_subjects = {os.path.basename(f).replace("_fALFF.nii", ""): f for f in falff_files}
     print(f"found {len(falff_subjects)} fALFF subjects")
 
     # Get all subjects with sMRI
-    print("finding sMRI subjects...")
+    print("Finding sMRI subjects...")
     smri_files = glob.glob(os.path.join(SMRI_DIR, "*_smri.nii.gz"))
     smri_subjects = {os.path.basename(f).replace("_smri.nii.gz", ""): f for f in smri_files}
     print(f"found {len(smri_subjects)} sMRI subjects")
 
+    # Get all subjects with DWI
+    print("Finding DWI subjects...")
+    dwi_files = glob.glob(os.path.join(DWI_DIR, "*_dwi.nii.gz"))
+    dwi_subjects = {os.path.basename(f).replace("_dwi.nii.gz", ""): f for f in dwi_files}
+    print(f"found {len(dwi_subjects)} DWI subjects")
+
     # Get union of all subjects
-    all_subjects = sorted(set(falff_subjects.keys()) | set(smri_subjects.keys()))
+    all_subjects = sorted(set(falff_subjects.keys()) | set(smri_subjects.keys()) | set(dwi_subjects.keys()))
     print(f"total unique subjects: {len(all_subjects)}")
 
     # Load demographics only for these subjects
@@ -146,6 +153,14 @@ def main():
                 chunks = chunk_binobj(tensor_binary, idx, subject_id, "smri", CHUNK_SIZE_MB)
                 bin_docs.extend(chunks)
                 modalities.append("smri")
+
+            # Process DWI if available
+            if subject_id in dwi_subjects:
+                tensor = load_nifti(dwi_subjects[subject_id])
+                tensor_binary = tensor2bin(tensor)
+                chunks = chunk_binobj(tensor_binary, idx, subject_id, "dwi", CHUNK_SIZE_MB)
+                bin_docs.extend(chunks)
+                modalities.append("dwi")
 
             # Insert binary data
             if bin_docs:
