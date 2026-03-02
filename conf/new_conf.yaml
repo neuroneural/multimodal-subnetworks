@@ -20,12 +20,13 @@ model:
 
   # Default paths (will be overridden when using smart_init)
   unimodal_model_paths:
-    falff: ""
-    smri: ""
-    dwi: ""
+     falff: "./logs/baselines_fbirn_('falff',)_('gender_encoded',)_masked_False_sps_0.7/fold_0/model.best.pth"
+     smri: "/data/users2/ppopov1/multimodal-subnetworks/logs/baselines_fbirn_('smri',)_('gender_encoded',)_masked_False_sps_0.7/fold_3/model.best.pth"
+     dwi: "/data/users2/ppopov1/multimodal-subnetworks/logs/baselines_fbirn_('dwi',)_('gender_encoded',)_masked_False_sps_0.7/fold_2/model.best.pth"
 
   n_classes: 1
   model_channels: 64
+  multimodal_channels: 128
   model_label: "_resnet3d_gender_64base"
   volume_shape: [256, 256, 256]
   maxshape: 300
@@ -52,8 +53,8 @@ experiment:
   numvolumes: 8
   weights: 1
   databases: "multimodalSubnetworks"
-  collections: "ukb"
-  dbfields: ["smri"]
+  collections: "fbirn"
+  dbfields: ["falff", "smri", "dwi"]
   metafields: ["gender_encoded"]
   epochs: 60
   prefetches: 16

@@ -2,13 +2,13 @@
 #SBATCH -N 1
 #SBATCH -n 1
 #SBATCH -c 10
-#SBATCH --mem=100g
+#SBATCH --mem=128g
 #SBATCH -p qTRDGPUH
 #SBATCH -t 4440
-#SBATCH --gres=gpu:A100:1
-#SBATCH -J holoFMS
+#SBATCH --gres=gpu:A100:2
+#SBATCH -J ukbfalff
 #SBATCH -D .
-#SBATCH --output=./_out/smart-%j.out
+#SBATCH --output=./_out/%j.out
 #SBATCH -A psy53c17
 
 sleep 10s
@@ -21,19 +21,28 @@ source /data/users2/ppopov1/miniconda/bin/activate catalyst12
 echo "Using python from: $(which python)"
 echo "Conda environment: $CONDA_DEFAULT_ENV"
 
-dataset="fbirn"
+dataset="ukb"
+
 
 python train_script_rev.py \
-  experiment.experiment_name="smart_init" \
-  experiment.collections=fbirn \
-  experiment.dbfields="[falff,smri,dwi]" \
+  --config-name new_conf \
+  --config-dir conf \
+  experiment.experiment_name="baselines" \
+  experiment.collections=$dataset \
+  experiment.dbfields="[falff]" \
   experiment.metafields="[gender_encoded]" \
-  model.masked=True \
-  model.smart_init=True \
-  "model.unimodal_model_paths.falff=./logs/baselines_fbirn_('falff',)_('gender_encoded',)_masked_False_sps_0.7/fold_0/checkpoints/best.pth" \
-  "model.unimodal_model_paths.smri=./logs/baselines_fbirn_('smri',)_('gender_encoded',)_masked_False_sps_0.7/fold_0/checkpoints/best.pth" \
-  "model.unimodal_model_paths.dwi=./logs/baselines_fbirn_('dwi',)_('gender_encoded',)_masked_False_sps_0.7/fold_0/checkpoints/best.pth"
+  model.masked=False 
+python train_script_rev.py \
+  --config-name new_conf \
+  --config-dir conf \
+  experiment.experiment_name="masked" \
+  experiment.collections=$dataset \
+  experiment.dbfields="[falff]" \
+  experiment.metafields="[gender_encoded]" \
+  model.masked=True 
 
+
+  
 
 sleep 10s
 echo "Job $SLURM_JOB_ID completed"

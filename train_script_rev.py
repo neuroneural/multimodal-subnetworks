@@ -19,7 +19,7 @@ import torch
 from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import DataLoader
 from sklearn.model_selection import StratifiedKFold, train_test_split
-from resnet import ResNet3D
+from resnet import ResNet3D, enMesh_checkpoint
 
 from mindfultensors.mongoloader import MongoClient
 from mindfultensors.utils import unit_interval_normalize, DBBatchSampler
@@ -54,6 +54,7 @@ class CustomRunner(dl.Runner):
         wandb_experiment: str,
         model_path: str,
         n_channels: int,
+        multimodal_channels: int,
         n_classes: int,
         n_epochs: int,
         optimize_inline: bool,
@@ -87,6 +88,7 @@ class CustomRunner(dl.Runner):
         self.wandb_experiment = wandb_experiment
         self.model_path = model_path
         self.n_channels = n_channels
+        self.multimodal_channels = multimodal_channels
         self.n_classes = n_classes
         # self.config_file = modelconfig
         self.optimize_inline = optimize_inline
@@ -390,7 +392,9 @@ class CustomRunner(dl.Runner):
         return multimodal_collate({0:snip_dict}) # dict is expected in collate
 
     def get_model(self):
+        channels = self.multimodal_channels if self.multimodal else self.n_channels
         model = ResNet3D(
+        #model = enMesh_checkpoint(
             in_channels=1, 
             n_classes=self.n_classes, 
             channels=self.n_channels
@@ -606,6 +610,7 @@ def main(cfg: DictConfig):
     # config_file = cfg.model.config_file
     optimize_inline = cfg.model.optimize_inline
     model_channels = cfg.model.model_channels
+    multimodal_channels = cfg.model.multimodal_channels
     use_groupnorm = cfg.model.use_groupnorm
     model_path = cfg.paths.model if cfg.paths.loadcheckpoint else ""
     db_host = cfg.mongo.host_slurm if os.environ.get("SLURM_JOB_ID") else cfg.mongo.host
@@ -678,6 +683,7 @@ def main(cfg: DictConfig):
             wandb_experiment=wandb_experiment,
             model_path=model_path,
             n_channels=model_channels,
+            multimodal_channels=multimodal_channels,
             n_classes=n_classes,
             # modelconfig=config_file,
             n_epochs=epochs,
