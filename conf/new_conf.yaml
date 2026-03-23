@@ -45,18 +45,19 @@ client_creator:
 experiment:
   experiment_name: test
   cv_seed: 42
-  cv_folds: 10
-  lr_scale: 0.01
+  cv_folds: 5
+  lr_scale: 1
   cubesizes: 256
   numcubes: 1
-  numvolumes: 8
+  numvolumes: 6
   weights: 1
   databases: "multimodalSubnetworks"
   collections: "ukb"
   dbfields: ["smri"]
   metafields: ["gender_encoded"]
-  epochs: 60
-  prefetches: 16
+  epochs: 5
+  prefetches: 4
+  num_workers: 8
   attenuates: 0.8
 
 resnet_specific:

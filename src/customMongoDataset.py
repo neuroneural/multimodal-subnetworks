@@ -36,6 +36,15 @@ class CustomMongoDataset(MongoDataset):
             )
         )
 
+        # Batched .meta query for all subjects in batch — one query instead of N
+        meta_results = {
+            doc[self.id]: doc[self.meta_sample[0]]
+            for doc in self.collection["meta"].find(
+                {self.id: {"$in": [self.indices[_] for _ in batch]}},
+                {self.id: 1, self.meta_sample[0]: 1, "_id": 0}
+            )
+        }
+
         results = {}
         for id in batch:
             # Separate samples for this id
@@ -48,19 +57,12 @@ class CustomMongoDataset(MongoDataset):
             # Separate processing for each 'kind' # TODO: for multimodal, pull all kinds here and then just match them with labels properly
             data = self.make_serial(samples_for_id, self.sample[0])
 
-            meta_for_id = list(
-                self.collection["meta"].find(
-                    {
-                        self.id: self.indices[id],
-                    },
-                    self.meta_sample,
-                )
-            )
+            #assert len(meta_for_id) != 0, f"No meta entries found for id {id}"
+            #assert len(meta_for_id) < 2, f"More than one meta entry found for id {id}"
+            assert self.indices[id] in meta_results, f"No meta entries found for id {id}"
 
-            assert len(meta_for_id) != 0, f"No meta entries found for id {id}"
-            assert len(meta_for_id) < 2, f"More than one meta entry found for id {id}"
             
-            label = meta_for_id[0][self.meta_sample[0]]
+            label = meta_results[self.indices[id]] #meta_for_id[0][self.meta_sample[0]]
 
             # Add to results
             results[id] = {
@@ -110,23 +112,29 @@ class MultimodalMongoDataset(MongoDataset):
             )
         )
 
+        # Batched .meta query for all subjects in batch — one query instead of N
+        meta_results = {
+            doc[self.id]: {
+                self.meta_sample[0]: doc[self.meta_sample[0]],
+                "modalities": doc["modalities"],
+            }
+            for doc in self.collection["meta"].find(
+                {self.id: {"$in": [self.indices[_] for _ in batch]}},
+                {self.id: 1, self.meta_sample[0]: 1, "modalities": 1, "_id": 0}
+            )
+        }
+
+
         results = {}
         for id in batch:
             # get ID's label and modalities
-            meta_for_id = list(
-                self.collection["meta"].find(
-                    {
-                        self.id: self.indices[id],
-                    },
-                    self.meta_sample + ("modalities",),
-                )
-            )
-
-            assert len(meta_for_id) != 0, f"No meta entries found for id {id}"
-            assert len(meta_for_id) < 2, f"More than one meta entry found for id {id}"
             
-            label = meta_for_id[0][self.meta_sample[0]]
-            modalities = meta_for_id[0]["modalities"]
+
+            assert self.indices[id] in meta_results, f"No meta entries found for id {id}"
+            meta = meta_results[self.indices[id]]
+            label = meta[self.meta_sample[0]]
+
+            modalities =  meta["modalities"] #meta_for_id[0]["modalities"]
             id_modalities = set(modalities).intersection(set(self.sample))
                 
 

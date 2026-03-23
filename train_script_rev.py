@@ -24,6 +24,13 @@ from resnet import ResNet3D
 from mindfultensors.mongoloader import MongoClient
 from mindfultensors.utils import unit_interval_normalize, DBBatchSampler
 
+def safe_normalize(img):
+    """Unit interval normalization with epsilon protection against zero-variance volumes."""
+    mn, mx = img.min(), img.max()
+    if mx - mn < 1e-8:
+        return torch.zeros_like(img)
+    return (img - mn) / (mx - mn)
+
 from src.db_client import ClientCreator
 from src.customMongoDataset import CustomMongoDataset, MultimodalMongoDataset, multimodal_collate, make_serial
 from src.masked_model import MultiMaskSNIPWrapper
@@ -34,7 +41,7 @@ utils.set_global_seed(SEED)
 setup_distributed_port(seed=SEED)
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:100"
-os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
+#os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
 # os.environ["NCCL_SOCKET_IFNAME"] = "ib0"
 # os.environ["NCCL_P2P_LEVEL"] = "NVL"
 
@@ -73,7 +80,8 @@ class CustomRunner(dl.Runner):
         db_fields: tuple,
         meta_fields: tuple,
         groupnorm=False,
-        prefetches=8,
+        prefetches=4,
+        num_workers=8,
         volume_shape=[256] * 3,
         subvolume_shape=[256] * 3,
         lowprecision=False,
@@ -94,6 +102,7 @@ class CustomRunner(dl.Runner):
         self.validation_percent = validation_percent
         self.rmsprop_lr = rmsprop_lr
         self.prefetches = prefetches
+        self.num_workers = num_workers
 
         self.db_host = db_host
         self.db_name = db_name
@@ -196,11 +205,15 @@ class CustomRunner(dl.Runner):
         all_ids = sorted(all_ids)
         # print(all_ids)
 
-        labels = []
-        for id in all_ids:
-            label = posts_meta.find_one({"id": id}, self.meta_fields)[self.meta_fields[0]] # get label for the id
-            labels.append(label)
-        labels = np.array(labels)
+        # Batch label fetch — single query instead of one find_one per subject
+        meta_docs = {
+            doc["id"]: doc[self.meta_fields[0]]
+            for doc in posts_meta.find(
+                {"id": {"$in": all_ids}},
+                {"id": 1, self.meta_fields[0]: 1, "_id": 0}
+            )
+        }
+        labels = np.array([meta_docs[i] for i in all_ids])
     
         # Create CV split
         cv_folds = StratifiedKFold(n_splits=self._hparams["experiment"]["cv_folds"], shuffle=True, random_state=self._hparams["experiment"].get("cv_seed", 42))
@@ -245,7 +258,7 @@ class CustomRunner(dl.Runner):
             None,
             self.db_fields,
             self.meta_fields,
-            normalize=unit_interval_normalize,
+            normalize=safe_normalize,
             id=self.index_id,
         )
         train_sampler = (
@@ -258,13 +271,11 @@ class CustomRunner(dl.Runner):
                 train_dataset,
                 sampler=train_sampler,
                 collate_fn=self.collate,
-                pin_memory=True,
+                pin_memory=not self.multimodal,
                 worker_init_fn=self.funcs["createclient"],
-                persistent_workers=True,
+                persistent_workers=False,
                 prefetch_factor=2,
-                num_workers=6,  # self.prefetches,
-                # prefetch_factor=None,
-                # num_workers=1,  # self.prefetches,
+                num_workers=self.num_workers,
             ),
             num_prefetches=self.prefetches,
         )
@@ -275,7 +286,7 @@ class CustomRunner(dl.Runner):
             None,
             self.db_fields,
             self.meta_fields,
-            normalize=unit_interval_normalize,
+            normalize=safe_normalize,
             id=self.index_id,
         )
         valid_sampler = (
@@ -290,13 +301,11 @@ class CustomRunner(dl.Runner):
                 valid_dataset,
                 sampler=valid_sampler,
                 collate_fn=self.collate,
-                pin_memory=True,
+                pin_memory=not self.multimodal,
                 worker_init_fn=self.funcs["createVclient"],
-                persistent_workers=True,
-                # prefetch_factor=4,
-                # num_workers=4,  # self.prefetches,
+                persistent_workers=False,
                 prefetch_factor=2,
-                num_workers=6,  # self.prefetches,
+                num_workers=self.num_workers,
             ),
             num_prefetches=self.prefetches,
         )
@@ -307,7 +316,7 @@ class CustomRunner(dl.Runner):
             None,
             self.db_fields,
             self.meta_fields,
-            normalize=unit_interval_normalize,
+            normalize=safe_normalize,
             id=self.index_id,
         )
         test_sampler = (
@@ -322,13 +331,11 @@ class CustomRunner(dl.Runner):
                 test_dataset,
                 sampler=test_sampler,
                 collate_fn=self.collate,
-                pin_memory=True,
+                pin_memory=not self.multimodal,
                 worker_init_fn=self.funcs["createVclient"],
-                persistent_workers=True,
-                # prefetch_factor=4,
-                # num_workers=4,  # self.prefetches,
+                persistent_workers=False,
                 prefetch_factor=2,
-                num_workers=6,  # self.prefetches,
+                num_workers=self.num_workers,
             ),
             num_prefetches=self.prefetches,
         )
@@ -380,7 +387,7 @@ class CustomRunner(dl.Runner):
                     data = make_serial(samples_for_id, mod)
 
                     result = {
-                        "input": unit_interval_normalize(self.funcs["mytransform"](data).float()),
+                        "input": safe_normalize(self.funcs["mytransform"](data).float()),
                         "modality": mod,
                         "label": torch.tensor(label).unsqueeze(0),
                     }
@@ -534,6 +541,7 @@ class CustomRunner(dl.Runner):
     # model train/valid step
     def handle_batch(self, batch):
 
+        #print(f'[DEBUG] batch_step={self.batch_step}', flush=True)
         # # Add synchronization before processing
         # if self.engine.is_ddp:
         #     torch.cuda.synchronize()
@@ -555,6 +563,9 @@ class CustomRunner(dl.Runner):
                 scaler.update()
                 self.optimizer.zero_grad()
             else:
+                if torch.isnan(sample).any() or torch.isinf(sample).any():
+                    print(f'[WARN] Bad input at step {self.batch_step}: nan={torch.isnan(sample).sum()} inf={torch.isinf(sample).sum()}')
+                    print(f"[WARN] Input shape: {sample.shape}, dtype: {sample.dtype}, min: {sample.min()}, max: {sample.max()}")
                 y_hat = self.model.forward(sample) if not self.masked else self.model.forward(sample, modality)
                 loss = self.criterion(y_hat, label.float())
                 loss.backward()
@@ -597,6 +608,11 @@ class CustomRunner(dl.Runner):
         del label
         del y_hat
         del loss
+        del proba_preds
+        del preds
+        del accuracy
+        if self.multimodal:
+            del modality
 
 @hydra.main(config_path="conf", config_name="new_conf", version_base=None)
 def main(cfg: DictConfig):
@@ -631,27 +647,10 @@ def main(cfg: DictConfig):
     metafields = tuple(cfg.experiment.metafields)
     epochs = cfg.experiment.epochs
     prefetches = cfg.experiment.prefetches
+    num_workers = cfg.experiment.num_workers
     attenuates = cfg.experiment.attenuates
 
-    # we need oneCycleLR, but not the rest of the curiculum
-    subvolume_shape = [cubesizes] * 3
-    onecycle_lr = rmsprop_lr = (
-        attenuates # this comes from 0.8/0.2 training? what is this input for oneCycleLR? TODO: trace it further
-        * 1
-        * cfg.experiment.lr_scale
-        * numcubes
-        * numvolumes
-        / 256
-    )
-    wandb_experiment = (
-        f"{experiment_name}: {collections}, {dbfields}-{metafields}, masked={cfg.model.get('masked', False)}, sps={cfg.model.get('sparsity', None)}"
-    )
 
-    # Set database parameters
-    client_creator.set_database(databases)
-    client_creator.set_collection(collections)
-    client_creator.set_num_subcubes(numcubes)
-    client_creator.set_shape(subvolume_shape)
 
     # paths:
     #     loadcheckpoint: False
@@ -665,9 +664,27 @@ def main(cfg: DictConfig):
 
     # run cross-validation
     for fold_idx in range(cfg.experiment.cv_folds):
+        subvolume_shape = [cubesizes] * 3
+        onecycle_lr = rmsprop_lr = (
+            attenuates 
+            * 1
+            * cfg.experiment.lr_scale
+            * numcubes
+            * numvolumes
+            / 256
+        )
+        wandb_experiment = (
+            f"{experiment_name}: {collections}, {dbfields}-{metafields}, masked={cfg.model.get('masked', False)}, sps={cfg.model.get('sparsity', None)}"
+        )
 
         print(f"Starting fold {fold_idx+1}/{cfg.experiment.cv_folds}")
         hparams["fold_idx"] = fold_idx
+
+        # Set database parameters
+        client_creator.set_database(databases)
+        client_creator.set_collection(collections)
+        client_creator.set_num_subcubes(numcubes)
+        client_creator.set_shape(subvolume_shape)
 
         rundir = f"{logdir}/fold_{fold_idx}"
         os.makedirs(logdir, exist_ok=True)
@@ -691,6 +708,7 @@ def main(cfg: DictConfig):
             client_creator=client_creator,
             off_brain_weight=weights,
             prefetches=prefetches,
+            num_workers=num_workers,
             indexid=cfg.mongo.index_id,
             db_collection=collections,
             db_name=databases,
@@ -705,6 +723,9 @@ def main(cfg: DictConfig):
             hparams=hparams,
         )
         runner.run()
+        del runner
+        torch.cuda.empty_cache()
+        import gc; gc.collect()
 
 
 if __name__ == "__main__":
