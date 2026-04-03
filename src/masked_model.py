@@ -188,96 +188,98 @@ class MultiMaskSNIPWrapper(nn.Module):
         topk_scores, _ = torch.topk(global_scores, num_params_to_keep, sorted=True)
         return topk_scores[-1]
 
-    def initialize_from_unimodal_models(self, unimodal_models_dict):
+    def initialize_from_unimodal_models(self, unimodal_models_dict, snip_data=None):
         """
         Initialize the multimodal sparse model from trained unimodal sparse models.
-        Alternative to register_multimodal_masks() for transfer learning initialization.
-        
+        Loads pretrained masks, optionally intersects them with fresh SNIP masks computed
+        on the fixed-init weights, then averages the fixed-init weights through the
+        combined masks.
+
         Args:
-            unimodal_models_dict: Dictionary mapping modality_id -> trained unimodal model state_dict
-                                  e.g., {0: state_dict_mod0, 1: state_dict_mod1, 2: state_dict_mod2}
+            unimodal_models_dict: {modality_id -> trained unimodal model state_dict}
+            snip_data: optional tuple (input_data, modalities, labels). When provided,
+                       pretrained masks are intersected with SNIP masks computed on the
+                       current (fixed-init) model weights.
         """
         print("Initializing multimodal model from unimodal models...")
-        
-        # Step 1: Extract masks and weights from each unimodal model
+
+        # Step 1: Extract pretrained masks from each unimodal model
         modality_masks = {}  # {mod_id: {layer_name: mask}}
-        modality_weights = {}  # {mod_id: {layer_name: weights}}
-        
         for mod_id, state_dict in unimodal_models_dict.items():
             modality_masks[mod_id] = {}
-            modality_weights[mod_id] = {}
-            
             for key, value in state_dict.items():
-                # Extract masks (they're saved as parametrizations.weight.0.mask_X)
                 if 'parametrizations.weight' in key and 'mask_' in key:
-                    # Parse layer name from key
                     layer_name = key.split('.parametrizations.weight')[0]
                     modality_masks[mod_id][layer_name] = value
-                
-                # Extract original weights (they're the 'original' in parametrization)
-                elif 'parametrizations.weight.original' in key:
-                    layer_name = key.split('.parametrizations.weight.original')[0]
-                    modality_weights[mod_id][layer_name] = value
-        
-        # Step 2: Register the masks in the multimodal model
+
+        # Step 2: Apply SNIP on fixed-init weights and intersect with pretrained masks
+        if snip_data is not None:
+            print("Running SNIP on fixed-init weights to refine pretrained masks...")
+            input_data, modalities_tensor, labels = snip_data
+            cpu_model = deepcopy(self.model).to('cpu')
+            cpu_optimizer = torch.optim.SGD(cpu_model.parameters(), 0.1)
+            target_device = next(iter(self.model.parameters())).device
+
+            for mod in torch.unique(modalities_tensor).cpu().detach().tolist():
+                print(f"  SNIP for modality: {mod}")
+                mask_idx = (modalities_tensor == mod)
+                batch = (input_data[mask_idx], labels[mask_idx])
+                snip_masks_for_mod = self._generate_mask_from_grad_scores(
+                    cpu_model, cpu_optimizer, batch, target_device
+                )
+                if mod in modality_masks:
+                    for layer_name, pretrained_mask in modality_masks[mod].items():
+                        if layer_name in snip_masks_for_mod:
+                            modality_masks[mod][layer_name] = torch.logical_and(
+                                pretrained_mask.bool(),
+                                snip_masks_for_mod[layer_name].bool()
+                            ).float()
+
+            del cpu_model, cpu_optimizer
+            print("SNIP intersection complete.")
+
+        # Step 3: Register the refined masks on the multimodal model
         print("Registering modality-specific masks...")
         for name, module in self.model.named_modules():
             if isinstance(module, PRUNE_LAYERS):
                 layer_masks = {}
                 has_masks = False
-                
                 for mod_id in modality_masks.keys():
                     if name in modality_masks[mod_id]:
                         layer_masks[mod_id] = modality_masks[mod_id][name].to(module.weight.device)
                         has_masks = True
-                
                 if has_masks:
                     snip_mask_module = MultimodalSNIPMask(layer_masks)
                     parametrize.register_parametrization(module, "weight", snip_mask_module)
-        
+
         self.masks_registered = True
-        
-        # Step 3: Merge weights using the smart averaging strategy
-        print("Merging weights with smart averaging...")
+
+        # Step 4: Average fixed-init weights through the combined masks.
+        # The model already holds the fixed-init weights (loaded before wrapping).
+        # We average at positions where multiple modality masks overlap.
+        print("Merging fixed-init weights with smart averaging...")
         for name, module in self.model.named_modules():
             if isinstance(module, PRUNE_LAYERS) and parametrize.is_parametrized(module, "weight"):
-                # Get the combined mask (logical OR of all modality masks)
-                combined_mask = torch.zeros_like(module.weight)
+                init_weights = module.parametrizations.weight.original.data.clone()
+                device = init_weights.device
+
+                combined_mask = torch.zeros_like(init_weights)
+                merged_weights = torch.zeros_like(init_weights)
+                count_matrix = torch.zeros_like(init_weights)
+
                 for mod_id in modality_masks.keys():
                     if name in modality_masks[mod_id]:
-                        combined_mask = torch.logical_or(
-                            combined_mask.bool(), 
-                            modality_masks[mod_id][name].to(module.weight.device).bool()
-                        ).float()
-                
-                # Initialize merged weight matrix
-                merged_weights = torch.zeros_like(module.weight)
-                count_matrix = torch.zeros_like(module.weight)
-                
-                # Accumulate weights from each modality where their mask is active
-                for mod_id in modality_weights.keys():
-                    if name in modality_weights[mod_id]:
-                        mod_mask = modality_masks[mod_id][name].to(module.weight.device)
-                        mod_weight = modality_weights[mod_id][name].to(module.weight.device)
-                        
-                        # Add weights where this modality's mask is active
-                        merged_weights += mod_weight * mod_mask
-                        # Track how many modalities contributed to each position
+                        mod_mask = modality_masks[mod_id][name].to(device)
+                        combined_mask = torch.logical_or(combined_mask.bool(), mod_mask.bool()).float()
+                        merged_weights += init_weights * mod_mask
                         count_matrix += mod_mask
-                
-                # Average: divide by the number of modalities that contributed
+
                 averaged_weights = torch.where(
                     count_matrix > 0,
                     merged_weights / count_matrix,
                     torch.zeros_like(merged_weights)
                 )
-                
-                # Only keep weights within the combined mask
-                final_weights = averaged_weights * combined_mask
-                
-                # Set the weights (access the 'original' parameter in parametrization)
-                module.parametrizations.weight.original.data = final_weights
-                
-                print(f"Layer {name}: Combined mask sparsity = {1 - combined_mask.mean().item():.2%}")
-        
+                module.parametrizations.weight.original.data = averaged_weights * combined_mask
+                print(f"Layer {name}: combined mask sparsity = {1 - combined_mask.mean().item():.2%}")
+
         print("Initialization complete!")

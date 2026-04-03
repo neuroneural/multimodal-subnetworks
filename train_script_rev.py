@@ -443,8 +443,13 @@ class CustomRunner(dl.Runner):
                     else:
                         raise FileNotFoundError(f"Unimodal model path not found: {path}")
                 
-                # Initialize from unimodal models
-                model.initialize_from_unimodal_models(unimodal_checkpoints)
+                # Initialize from unimodal models: load pretrained masks, apply SNIP
+                # on fixed-init weights, intersect masks, then average weights
+                snip_data, snip_modalities, snip_labels = self.snip_data
+                model.initialize_from_unimodal_models(
+                    unimodal_checkpoints,
+                    snip_data=(snip_data, snip_modalities, snip_labels)
+                )
                 print("Smart initialization complete!")
                 
             else:
