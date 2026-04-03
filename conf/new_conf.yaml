@@ -26,6 +26,7 @@ model:
 
   n_classes: 1
   model_channels: 64
+  init_weights_path: "/data/users2/jwardell1/multimodal-subnetworks/init_weights_seed1997_ch64.pth"
   model_label: "_resnet3d_gender_64base"
   volume_shape: [256, 256, 256]
   maxshape: 300
