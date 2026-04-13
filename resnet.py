@@ -125,7 +125,11 @@ class ResNet3D(nn.Module):
         
         # Classification head
         self.avgpool = nn.AdaptiveAvgPool3d(1)
-        self.fc = nn.Linear(channels*8, 1)
+        self.fc = nn.Sequential(
+            nn.Linear(channels*8, channels*4),
+            nn.ReLU(),
+            nn.Linear(channels*4, 1)
+        )
         
         # Initialize weights
         self.apply(self._init_weights)
