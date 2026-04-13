@@ -121,11 +121,11 @@ class ResNet3D(nn.Module):
         self.layer1 = self._make_layer(channels, channels, blocks=2, stride=1)
         self.layer2 = self._make_layer(channels, channels*2, blocks=2, stride=2)
         self.layer3 = self._make_layer(channels*2, channels*4, blocks=2, stride=2)
-        self.layer4 = self._make_layer(channels*4, channels*8, blocks=2, stride=2)
+        self.layer4 = self._make_layer(channels*4, channels*16, blocks=2, stride=2)
         
         # Classification head
         self.avgpool = nn.AdaptiveAvgPool3d(1)
-        self.fc = nn.Linear(channels*8, 1)
+        self.fc = nn.Linear(channels*16, 1)
         
         # Initialize weights
         self.apply(self._init_weights)
