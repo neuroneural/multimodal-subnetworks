@@ -226,14 +226,6 @@ class CustomRunner(dl.Runner):
         valid_ids = all_ids[valid_idx].tolist()
         test_ids = all_ids[test_idx].tolist()
 
-        # get data for masks calculation
-        init_weights_path = self._hparams["model"].get("init_weights_path", None)
-        if init_weights_path and os.path.exists(init_weights_path):
-            model.load_state_dict(torch.load(init_weights_path, map_location="cpu"))
-            print(f"Loaded init weights from {init_weights_path}")
-        elif init_weights_path:
-            raise FileNotFoundError(f"init_weights_path not found: {init_weights_path}")
-
         if self.masked:
             print("Preparing SNIP mask data...")
             snip_batch_size = self._hparams["model"].get("snip_batch_size", 20)
