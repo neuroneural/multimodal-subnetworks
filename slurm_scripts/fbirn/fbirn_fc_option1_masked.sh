@@ -6,6 +6,7 @@
 #SBATCH -p qTRDGPUH
 #SBATCH -t 7200
 #SBATCH --gres=gpu:A100:1
+#SBATCH --nodelist=arctrddgxa002
 #SBATCH -J fc_opt1_masked
 #SBATCH -D /data/users2/jwardell1/multimodal-subnetworks-fc-option1
 #SBATCH --output=/data/users2/jwardell1/multimodal-subnetworks-fc-option1/_out/%j.out
@@ -32,6 +33,6 @@ python3 train_script_rev.py \
     model.snip_batch_size=20 \
     model.smart_init=False \
     model.model_channels=64 \
-    model.init_weights_path=/data/users2/jwardell1/multimodal-subnetworks-fc-option1/init_weights_seed1997_fc_option1.pth
+    model.init_weights_path="" \
 
 echo "Job $SLURM_JOB_ID completed"
