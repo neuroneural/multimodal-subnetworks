@@ -174,3 +174,4 @@ labels_serialized.txt
 labels_meta.txt
 file_structure.txt
 plots/
+*.pth
