@@ -506,6 +506,9 @@ class CustomRunner(dl.Runner):
             compute_on_call=False
         )
 
+        # Per-modality meters (populated lazily)
+        self.modality_meters = {}  # {modality_id: {metric_name: meter}}
+
         # --- CSV LOGGING SETUP ---
         rank = distributed.get_rank()
         loader_key = self.loader_key # e.g., "train", "valid"
@@ -527,6 +530,22 @@ class CustomRunner(dl.Runner):
         for key in ["loss", "accuracy", "learning rate"]:
             self.loader_metrics[key] = self.meters[key].compute()[0]
         self.loader_metrics["auc"] = self.meters["auc"].compute()[2]
+
+        # per modality metrics for multimodal runs
+        if self.multimodal and self.modality_meters:
+            for mod_id, mod_meters_dict in self.modality_meters.items():
+                accuracy = mod_meters_dict["accuracy"].compute()[0]
+                auc = mod_meters_dict["auc"].compute()[2]
+
+                self.loader_metrics[f"accuracy_mod_{mod_id}"] = accuracy
+                self.loader_metrics[f"auc_mod_{mod_id}"] = auc
+
+                if self.engine.is_ddp:
+                    world_size = distributed.get_world_size()
+                    local_acc = self.loader_metrics[f"accuracy_mod_{mod_id}"]
+                    acc_tensor = torch.tensor([local_acc], device=self.engine.device)
+                    avg_acc = distributed.mean_reduce(acc_tensor, world_size)
+                    self.loader_metrics[f"accuracy_mod_{mod_id}"] = avg_acc.item()
 
         if self.engine.is_ddp:
             # Get world_size explicitly
@@ -594,6 +613,31 @@ class CustomRunner(dl.Runner):
             preds = proba_preds > 0.5
             accuracy = (preds == label).float().mean()
             
+            # per-modality metrics for multimodal runs
+            if self.multimodal:
+                # Get unique modalities in this batch
+                unique_mods = torch.unique(modality).cpu().tolist()
+                
+                for mod in unique_mods:
+                    mod_idx = (modality == mod)
+                    mod_batch_size = mod_idx.sum().item()
+                    
+                    # Compute metrics for this modality
+                    mod_proba = torch.sigmoid(y_hat[mod_idx])
+                    mod_preds = mod_proba > 0.5
+                    mod_accuracy = (mod_preds == label[mod_idx]).float().mean()
+                    
+                    # Initialize meter for this modality if first time seeing it
+                    if mod not in self.modality_meters:
+                        self.modality_meters[mod] = {
+                            "accuracy": metrics.AdditiveValueMetric(compute_on_call=False),
+                            "auc": metrics.AUCMetric(compute_on_call=False),
+                        }
+                    
+                    # Update modality meters
+                    self.modality_meters[mod]["accuracy"].update(mod_accuracy.item(), mod_batch_size)
+                    self.modality_meters[mod]["auc"].update(mod_proba, label[mod_idx])
+
             # CSV logging: Move to CPU / Numpy
             probs_np = proba_preds.detach().cpu().numpy().flatten()
             targets_np = label.detach().cpu().numpy().flatten()
