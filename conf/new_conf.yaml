@@ -14,6 +14,7 @@ bit16: False
 
 model:
   masked: False
+  multihead: False  # one classifier head per modality (shared backbone)
   sparsity: 0.7
   snip_batch_size: 20
   smart_init: False  # Set to False by default, override via command line or dedicated config

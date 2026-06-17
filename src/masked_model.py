@@ -39,6 +39,24 @@ class MultiMaskSNIPWrapper(nn.Module):
         self.model = model
         self.sparsity = sparsity
         self.masks_registered = False
+        # Multi-head models route per-modality classifier heads and require the
+        # modality id in their forward; single-head models do not.
+        self.multihead = hasattr(model, 'heads')
+
+    def _run_model(self, data, mod):
+        """Call the wrapped model, passing the modality only for multi-head models."""
+        if self.multihead:
+            return self.model(data, mod)
+        return self.model(data)
+
+    def _is_prunable(self, name, module):
+        """Layers eligible for SNIP masking. Per-modality heads are kept dense."""
+        if not isinstance(module, PRUNE_LAYERS):
+            return False
+        # Exclude the per-modality classifier heads ('heads.<mod>' submodules).
+        if self.multihead and (name == 'heads' or name.startswith('heads.')):
+            return False
+        return True
 
     def register_multimodal_masks(self, modalities, input_data, labels):
         """
@@ -65,14 +83,14 @@ class MultiMaskSNIPWrapper(nn.Module):
             
             # Calculate scores using local CPU model
             masks_by_name = self._generate_mask_from_grad_scores(
-                cpu_model, cpu_optimizer, batch, target_device
+                cpu_model, cpu_optimizer, batch, target_device, mod
             )
             temp_mask_storage[mod] = masks_by_name
 
         # 2. Register Parametrizations on the actual model
         print("Registering Parametrizations...")
         for name, module in self.model.named_modules():
-            if isinstance(module, PRUNE_LAYERS):
+            if self._is_prunable(name, module):
                 layer_masks = {}
                 has_masks = False
                 for mod, mask_dict in temp_mask_storage.items():
@@ -93,7 +111,7 @@ class MultiMaskSNIPWrapper(nn.Module):
 
     def forward(self, input_data, modalities):
         if not self.masks_registered:
-            return self.model(input_data)
+            return self._run_model(input_data, modalities)
         
         device = next(iter(self.model.parameters())).device 
         input_device = input_data.device
@@ -114,7 +132,7 @@ class MultiMaskSNIPWrapper(nn.Module):
             self._set_active_modality(mod)
             
             # B. Forward Pass (Autograd tracks: output = weight * mask_mod)
-            sub_output = self.model(sub_data)
+            sub_output = self._run_model(sub_data, mod)
             final_outputs[mod_idx] = sub_output
             
         # C. Reset to Identity (No mask)
@@ -138,7 +156,7 @@ class MultiMaskSNIPWrapper(nn.Module):
         print(f"Restoring parametrization structure for modalities: {modalities_list}")
         for name, module in self.model.named_modules():
             # Only process if it's a target layer and NOT already parametrized
-            if isinstance(module, PRUNE_LAYERS) and not parametrize.is_parametrized(module, "weight"):
+            if self._is_prunable(name, module) and not parametrize.is_parametrized(module, "weight"):
                 # Get the actual shape of the weights for this specific layer
                 weight_shape = module.weight.shape
                 # Create dummy masks matching that shape
@@ -153,30 +171,31 @@ class MultiMaskSNIPWrapper(nn.Module):
         self.masks_registered = True
 
     # --- INTERNAL SNIP HELPERS ---
-    def _generate_mask_from_grad_scores(self, model, optimizer, batch, target_device):
-        scores_dict = self._calculate_scores(model, optimizer, batch)
+    def _generate_mask_from_grad_scores(self, model, optimizer, batch, target_device, mod=None):
+        scores_dict = self._calculate_scores(model, optimizer, batch, mod)
         threshold = self._get_threshold_from_scores(scores_dict)
-        
+
         masks = {}
         for name, values in scores_dict.items():
             masks[name] = (values > threshold).float().to(target_device)
         return masks
 
-    def _calculate_scores(self, model, optimizer, batch):
+    def _calculate_scores(self, model, optimizer, batch, mod=None):
         data, labels = batch
         # Force data to CPU to match the CPU copy of the model
         data, labels = data.to('cpu'), labels.to('cpu')
-        
+
         model.train()
         optimizer.zero_grad()
-        
-        preds = model(data)
+
+        # Multi-head models need the modality to select the classifier head.
+        preds = model(data, mod) if self.multihead else model(data)
         loss = F.binary_cross_entropy_with_logits(preds, labels.float())
         loss.backward()
-        
+
         scores_d = {}
         for name, module in model.named_modules():
-            if isinstance(module, PRUNE_LAYERS) and module.weight.grad is not None:
+            if self._is_prunable(name, module) and module.weight.grad is not None:
                 # SNIP score = |grad * weight|
                 scores_d[name] = (module.weight.grad * module.weight.data).abs()
         return scores_d
@@ -253,7 +272,7 @@ class MultiMaskSNIPWrapper(nn.Module):
 
                 batch = (input_data[mask_idx], labels[mask_idx])
                 snip_masks_for_mod = self._generate_mask_from_grad_scores(
-                    cpu_model, cpu_optimizer, batch, target_device
+                    cpu_model, cpu_optimizer, batch, target_device, mod_idx
                 )
 
                 for layer_name, pretrained_mask in modality_masks.get(mod_id, {}).items():
@@ -271,7 +290,7 @@ class MultiMaskSNIPWrapper(nn.Module):
         # produced by torch.unique(modalities) in the forward pass.
         print("Registering modality-specific masks...")
         for name, module in self.model.named_modules():
-            if isinstance(module, PRUNE_LAYERS):
+            if self._is_prunable(name, module):
                 layer_masks = {}
                 has_masks = False
                 for idx, mod_id in enumerate(mod_id_list):
@@ -287,7 +306,7 @@ class MultiMaskSNIPWrapper(nn.Module):
         # Step 4: Average pretrained weights through the combined masks.
         print("Merging pretrained weights with smart averaging...")
         for name, module in self.model.named_modules():
-            if isinstance(module, PRUNE_LAYERS) and parametrize.is_parametrized(module, "weight"):
+            if self._is_prunable(name, module) and parametrize.is_parametrized(module, "weight"):
                 device = module.parametrizations.weight.original.data.device
 
                 combined_mask = torch.zeros_like(module.parametrizations.weight.original.data)

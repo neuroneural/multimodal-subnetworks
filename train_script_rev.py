@@ -19,7 +19,7 @@ import torch
 from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import DataLoader
 from sklearn.model_selection import StratifiedKFold, train_test_split
-from resnet import ResNet3D
+from resnet import ResNet3D, MultiHeadResNet3D
 
 from mindfultensors.mongoloader import MongoClient
 from mindfultensors.utils import unit_interval_normalize, DBBatchSampler
@@ -32,7 +32,7 @@ def safe_normalize(img):
     return (img - mn) / (mx - mn)
 
 from src.db_client import ClientCreator
-from src.customMongoDataset import CustomMongoDataset, MultimodalMongoDataset, multimodal_collate, make_serial
+from src.customMongoDataset import CustomMongoDataset, MultimodalMongoDataset, multimodal_collate, make_serial, map_modality_codes
 from src.masked_model import MultiMaskSNIPWrapper
 from src.utils import setup_distributed_port
 
@@ -127,6 +127,9 @@ class CustomRunner(dl.Runner):
         self._hparams = hparams
 
         self.masked = self._hparams["model"].get("masked", False)
+        # Use one classifier head per modality (shared backbone) instead of a
+        # single shared head. Works for both dense and masked training.
+        self.multihead = self._hparams["model"].get("multihead", False)
 
     def get_engine(self):
         if torch.cuda.device_count() > 1:
@@ -396,16 +399,37 @@ class CustomRunner(dl.Runner):
         return multimodal_collate({0:snip_dict}) # dict is expected in collate
 
     def get_model(self):
-        model = ResNet3D(
-            in_channels=1, 
-            n_classes=self.n_classes, 
-            channels=self.n_channels
-        )
+        if self.multihead:
+            # One head per modality present in db_fields, keyed by integer code.
+            modality_codes = [map_modality_codes(m) for m in self.db_fields]
+            print(f"Building MultiHeadResNet3D with heads for modalities: {modality_codes}")
+            model = MultiHeadResNet3D(
+                in_channels=1,
+                n_classes=self.n_classes,
+                channels=self.n_channels,
+                modalities=modality_codes,
+            )
+        else:
+            model = ResNet3D(
+                in_channels=1,
+                n_classes=self.n_classes,
+                channels=self.n_channels
+            )
 
         init_weights_path = self._hparams["model"].get("init_weights_path", None)
         if init_weights_path and os.path.exists(init_weights_path):
-            model.load_state_dict(torch.load(init_weights_path, map_location="cpu"))
-            print(f"Loaded init weights from {init_weights_path}")
+            # Single-head checkpoints have 'fc.*' and no 'heads.*'; load the
+            # shared backbone non-strictly for multi-head models and let each
+            # head keep its fresh init.
+            missing = model.load_state_dict(
+                torch.load(init_weights_path, map_location="cpu"),
+                strict=not self.multihead,
+            )
+            if self.multihead:
+                print(f"Loaded init backbone weights from {init_weights_path} "
+                      f"(missing/unexpected: {missing})")
+            else:
+                print(f"Loaded init weights from {init_weights_path}")
         elif init_weights_path:
             raise FileNotFoundError(f"init_weights_path not found: {init_weights_path}")
 
@@ -566,7 +590,7 @@ class CustomRunner(dl.Runner):
         if self.model.training:
             if self.bit16:
                 with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
-                    y_hat = self.model.forward(sample) if not self.masked else self.model.forward(sample, modality)
+                    y_hat = self.model.forward(sample) if not (self.masked or self.multihead) else self.model.forward(sample, modality)
                     loss = self.criterion(y_hat, label.float())
                 scaler.scale(loss).backward()
                 scaler.step(self.optimizer)
@@ -577,7 +601,7 @@ class CustomRunner(dl.Runner):
                 if torch.isnan(sample).any() or torch.isinf(sample).any():
                     print(f'[WARN] Bad input at step {self.batch_step}: nan={torch.isnan(sample).sum()} inf={torch.isinf(sample).sum()}')
                     print(f"[WARN] Input shape: {sample.shape}, dtype: {sample.dtype}, min: {sample.min()}, max: {sample.max()}")
-                y_hat = self.model.forward(sample) if not self.masked else self.model.forward(sample, modality)
+                y_hat = self.model.forward(sample) if not (self.masked or self.multihead) else self.model.forward(sample, modality)
                 loss = self.criterion(y_hat, label.float())
                 loss.backward()
                 self.optimizer.step()
@@ -585,7 +609,7 @@ class CustomRunner(dl.Runner):
                 self.optimizer.zero_grad()
         else:
             with torch.no_grad():
-                y_hat = self.model.forward(sample) if not self.masked else self.model.forward(sample, modality)
+                y_hat = self.model.forward(sample) if not (self.masked or self.multihead) else self.model.forward(sample, modality)
                 loss = self.criterion(y_hat, label.float())
 
         # Metrics calculation and CSV logging

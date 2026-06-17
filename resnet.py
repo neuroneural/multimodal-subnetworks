@@ -158,6 +158,57 @@ class ResNet3D(nn.Module):
         x = self.fc(x)
         return x
 
+class MultiHeadResNet3D(ResNet3D):
+    """3D ResNet with a shared backbone and one classifier head per modality.
+
+    The convolutional trunk (conv1..layer4 + avgpool) is shared across all
+    modalities; only the final Linear classifier is modality-specific. This
+    decouples the per-modality decision boundary while still sharing the
+    feature extractor.
+
+    forward(x, modalities):
+        - modalities as a per-sample LongTensor -> routes each sample to its
+          head (dense path: backbone runs ONCE over the whole batch).
+        - modalities as a python int / 0-d tensor -> uses that single head for
+          the whole batch (used by the masked wrapper, which already isolates
+          one modality per sub-batch).
+    """
+    def __init__(self, in_channels, n_classes, channels, modalities, config_file=None):
+        super().__init__(in_channels, n_classes, channels, config_file)
+        feat_dim = channels * 8
+        # Drop the shared head from ResNet3D and replace with per-modality heads.
+        del self.fc
+        self.modalities = sorted(int(m) for m in modalities)
+        self.heads = nn.ModuleDict({
+            str(m): nn.Linear(feat_dim, 1) for m in self.modalities
+        })
+
+    def features(self, x):
+        """Shared backbone -> flattened pooled feature vector [B, channels*8]."""
+        x = F.relu(self.bn1(self.conv1(x)))
+        x = self.maxpool(x)
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+        x = self.avgpool(x)
+        return torch.flatten(x, 1)
+
+    def forward(self, x, modalities):
+        feats = self.features(x)
+
+        # Single-modality call (masked sub-batch): one head for everything.
+        if not torch.is_tensor(modalities) or modalities.dim() == 0:
+            mod = int(modalities) if not torch.is_tensor(modalities) else int(modalities.item())
+            return self.heads[str(mod)](feats)
+
+        # Per-sample routing (dense path).
+        out = torch.zeros(x.shape[0], 1, device=x.device, dtype=feats.dtype)
+        for m in torch.unique(modalities).tolist():
+            idx = (modalities == m)
+            out[idx] = self.heads[str(int(m))](feats[idx])
+        return out
+
 class enMesh_checkpoint(ResNet3D):
     """Memory-efficient version with gradient checkpointing"""
     def train_forward(self, x):
