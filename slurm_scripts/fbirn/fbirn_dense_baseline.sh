@@ -4,7 +4,7 @@
 #SBATCH -c 20                   # CPU cores per task
 #SBATCH --mem=96g               # Memory allocation
 #SBATCH -p qTRDGPUH             # Partition name
-#SBATCH -t 1440                 # Time limit in minutes
+#SBATCH -t 5760                 # Time limit in minutes (4 days)
 #SBATCH --gres=gpu:A100:2       # 2 GPUs for dense multimodal
 #SBATCH -J fbirn_dense_base     # Job name
 #SBATCH -D .                    # node starting path = path you submit from
