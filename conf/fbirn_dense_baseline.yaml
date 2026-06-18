@@ -1,0 +1,22 @@
+defaults:
+  - new_conf
+
+wandb:
+  team: "pavalipopov"  # Your specified team name
+  project: "multimodal-subnetworks-rev"  # Your requested project name
+
+# Baseline: dense multimodal with the OLD single shared classifier head
+# (multihead=False). Same data/settings as fbirn_multi_dense so the scores
+# are directly comparable against the per-modality-head version.
+experiment:
+  experiment_name: fbirn_dense_baseline
+  collections: fbirn
+  dbfields: [falff, smri, dwi]  # All three modalities
+  metafields: [gender_encoded]
+  cv_folds: 10
+  epochs: 60
+
+model:
+  masked: False
+  multihead: False
+  model_channels: 64
