@@ -1,0 +1,24 @@
+defaults:
+  - new_conf
+
+wandb:
+  team: "pavalipopov"  # Your specified team name
+  project: "multimodal-subnetworks-rev"  # Your requested project name
+
+# Baseline: masked (SNIP) multimodal with the OLD single shared classifier
+# head (multihead=False). Same data/settings as fbirn_multi_masked so the
+# scores are directly comparable against the per-modality-head version.
+experiment:
+  experiment_name: fbirn_masked_baseline
+  collections: fbirn
+  dbfields: [falff, smri, dwi]  # All three modalities
+  metafields: [gender_encoded]
+  cv_folds: 10
+  epochs: 60
+
+model:
+  masked: True
+  multihead: False
+  sparsity: 0.7
+  snip_batch_size: 20
+  model_channels: 64
