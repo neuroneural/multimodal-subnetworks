@@ -13,10 +13,11 @@ wandb:
 bit16: False
 
 model:
-  masked: False
-  sparsity: 0.7
+  masked: True
+  sparsity: 0.5 # WAS .7
   snip_batch_size: 20
   smart_init: False  # Set to False by default, override via command line or dedicated config
+  compare_mask_gradients: True  # Set to True to run a side-by-side comparison of with vs without mask_gradients
 
   # Default paths (will be overridden when using smart_init)
   unimodal_model_paths:
@@ -57,6 +58,7 @@ experiment:
   dbfields: ["smri"]
   metafields: ["gender_encoded"]
   epochs: 5
+  max_subjects: 100   # Set to null or an integer (e.g. 100) to cap the subject pool for quick tests
   prefetches: 4
   num_workers: 8
   attenuates: 0.8

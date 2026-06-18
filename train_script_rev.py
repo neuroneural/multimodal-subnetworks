@@ -50,7 +50,7 @@ if version.parse(torch_version) >= version.parse("2.3"):
     scaler = torch.amp.GradScaler()
 else:
     scaler = torch.cuda.amp.GradScaler()
-    
+
 # CustomRunner – PyTorch for-loop decomposition
 # https://github.com/catalyst-team/catalyst#minimal-examples
 class CustomRunner(dl.Runner):
@@ -127,6 +127,7 @@ class CustomRunner(dl.Runner):
         self._hparams = hparams
 
         self.masked = self._hparams["model"].get("masked", False)
+        self.compare_mask_gradients = self._hparams["model"].get("compare_mask_gradients", False)
 
     def get_engine(self):
         if torch.cuda.device_count() > 1:
@@ -181,7 +182,7 @@ class CustomRunner(dl.Runner):
             "mycollate_full": self.client_creator.mycollate_full,
             "mytransform": self.client_creator.mytransform,
         }
-        
+
         self.collate = (
             multimodal_collate if self.multimodal else #MM
             self.funcs["mycollate_full"]
@@ -197,12 +198,19 @@ class CustomRunner(dl.Runner):
         posts_meta = db[self.db_collection + ".meta"]
 
         # get ids, pull labels
-        all_ids = posts_meta.distinct( # pull all unique IDs (subjects) with at least one modality in db_fields
+        all_ids = posts_meta.distinct( # pull all unique IDs (subjects) with ALL required modalities in db_fields
             "id",
-            {'modalities': {"$in": self.db_fields}}
-            #{'modalities': {"$all": self.db_fields}}
+            #{'modalities': {"$in": self.db_fields}}
+            {'modalities': {"$all": self.db_fields}}     ### CLAUDE & LISA 20260608
         )
         all_ids = sorted(all_ids)
+
+        # Cap subject pool for quick subset runs
+        max_subjects = self._hparams["experiment"].get("max_subjects", None)
+        if max_subjects is not None:
+            all_ids = all_ids[:max_subjects]
+            print(f"[INFO] max_subjects={max_subjects}: using {len(all_ids)} subjects")
+
         # print(all_ids)
 
         # Batch label fetch — single query instead of one find_one per subject
@@ -214,7 +222,7 @@ class CustomRunner(dl.Runner):
             )
         }
         labels = np.array([meta_docs[i] for i in all_ids])
-    
+
         # Create CV split
         cv_folds = StratifiedKFold(n_splits=self._hparams["experiment"]["cv_folds"], shuffle=True, random_state=self._hparams["experiment"].get("cv_seed", 42))
         train_idx, test_idx = list(cv_folds.split(all_ids, labels))[self._hparams["fold_idx"]]
@@ -229,7 +237,7 @@ class CustomRunner(dl.Runner):
         if self.masked:
             print("Preparing SNIP mask data...")
             snip_batch_size = self._hparams["model"].get("snip_batch_size", 20)
-            rng = random.Random(SEED) 
+            rng = random.Random(SEED)
             snip_batch_ids = rng.sample(train_ids, len(train_ids))[:snip_batch_size]
 
             snip_data, snip_modalities, snip_labels = self.get_snip_data(posts_bin, posts_meta, snip_batch_ids)
@@ -252,7 +260,7 @@ class CustomRunner(dl.Runner):
         usedDataset = MultimodalMongoDataset if self.multimodal else CustomMongoDataset #MM
         # Create dataloaders
         train_dataset = usedDataset(
-            train_ids, 
+            train_ids,
             self.funcs["mytransform"],
             None,
             self.db_fields,
@@ -397,8 +405,8 @@ class CustomRunner(dl.Runner):
 
     def get_model(self):
         model = ResNet3D(
-            in_channels=1, 
-            n_classes=self.n_classes, 
+            in_channels=1,
+            n_classes=self.n_classes,
             channels=self.n_channels
         )
 
@@ -419,11 +427,11 @@ class CustomRunner(dl.Runner):
             # Check if we should use smart initialization from unimodal models
             use_smart_init = self._hparams["model"].get("smart_init", False)
             unimodal_paths = self._hparams["model"].get("unimodal_model_paths", None)
-            
+
             if use_smart_init and unimodal_paths:
                 print("Using smart initialization from unimodal models...")
                 print(f"Unimodal paths config: {unimodal_paths}")
-                
+
                 # Load unimodal model state_dicts
                 unimodal_checkpoints = {}
                 for mod_id, path in unimodal_paths.items():
@@ -434,7 +442,7 @@ class CustomRunner(dl.Runner):
                         unimodal_checkpoints[mod_id] = checkpoint
                     else:
                         raise FileNotFoundError(f"Unimodal model path not found: {path}")
-                
+
                 # Initialize from unimodal models: load pretrained masks, apply SNIP
                 # on fixed-init weights, intersect masks, then average weights
                 snip_data, snip_modalities, snip_labels = self.snip_data
@@ -443,13 +451,25 @@ class CustomRunner(dl.Runner):
                     snip_data=(snip_data, snip_modalities, snip_labels)
                 )
                 print("Smart initialization complete!")
-                
+
             else:
                 # Standard SNIP initialization from scratch
                 print("Initializing masks from scratch using SNIP...")
                 snip_data, snip_modalities, snip_labels = self.snip_data
                 model.register_multimodal_masks(snip_modalities, snip_data, snip_labels)
                 print("Masks initialized.")
+
+        # --- COMPARISON MODEL ---
+        # A second identical model trained WITHOUT mask_gradients for side-by-side comparison
+        if self.masked and self.compare_mask_gradients:
+            from copy import deepcopy
+            self.comparison_model = deepcopy(model)
+            self.comparison_optimizer = torch.optim.Adam(
+                self.comparison_model.parameters(), lr=self.onecycle_lr
+            )
+            self.comparison_scheduler = None  # initialized lazily once loaders are ready
+            print("Comparison model (no mask_gradients) initialized.")
+        # ------------------------
 
         return model
 
@@ -506,18 +526,27 @@ class CustomRunner(dl.Runner):
             compute_on_call=False
         )
 
+        # --- COMPARISON METERS ---
+        if self.masked and self.compare_mask_gradients:
+            self.comparison_meters = {
+                key: metrics.AdditiveValueMetric(compute_on_call=False)
+                for key in ["loss", "accuracy"]
+            }
+            self.comparison_meters["auc"] = metrics.AUCMetric(compute_on_call=False)
+        # -------------------------
+
         # --- CSV LOGGING SETUP ---
         rank = distributed.get_rank()
         loader_key = self.loader_key # e.g., "train", "valid"
         self.csv_filename = os.path.join(
-            self._logdir, 
+            self._logdir,
             f"raw_preds_{loader_key}_rank_{rank}.csv"
         )
         file_exists = os.path.isfile(self.csv_filename) and os.path.getsize(self.csv_filename) > 0
 
         self.csv_file = open(self.csv_filename, 'a', newline='')
         self.csv_writer = csv.writer(self.csv_file)
-        
+
         # Write header only if file is new
         if not file_exists:
             self.csv_writer.writerow(["epoch", "probability", "target"])
@@ -528,17 +557,36 @@ class CustomRunner(dl.Runner):
             self.loader_metrics[key] = self.meters[key].compute()[0]
         self.loader_metrics["auc"] = self.meters["auc"].compute()[2]
 
+        ### ADDED START - side-by-side epoch print
+        print(
+            f"[Epoch {self.epoch_step}] {self.loader_key} | WITH mask_gradients    | "
+            f"AUC: {self.loader_metrics['auc']:.4f}  "
+            f"Loss: {self.loader_metrics['loss']:.4f}  "
+            f"Accuracy: {self.loader_metrics['accuracy']:.4f}"
+        )
+        if self.masked and self.compare_mask_gradients:
+            comp_auc = self.comparison_meters["auc"].compute()[2]
+            comp_loss = self.comparison_meters["loss"].compute()[0]
+            comp_acc = self.comparison_meters["accuracy"].compute()[0]
+            print(
+                f"[Epoch {self.epoch_step}] {self.loader_key} | WITHOUT mask_gradients | "
+                f"AUC: {comp_auc:.4f}  "
+                f"Loss: {comp_loss:.4f}  "
+                f"Accuracy: {comp_acc:.4f}"
+            )
+        ### ADDED END - side-by-side epoch print
+
         if self.engine.is_ddp:
             # Get world_size explicitly
             world_size = distributed.get_world_size()
-            
+
             for key in ["loss", "accuracy"]:
                 local_val = self.loader_metrics[key]
-                
+
                 # Create a tensor on the correct device
                 # self.engine.device is reliable for the current worker's device
                 val_tensor = torch.tensor([local_val], device=self.engine.device)
-                
+
                 # FIX: Pass world_size to mean_reduce
                 avg_tensor = distributed.mean_reduce(val_tensor, world_size)
                 self.loader_metrics[key] = avg_tensor.item()
@@ -556,7 +604,7 @@ class CustomRunner(dl.Runner):
         # # Add synchronization before processing
         # if self.engine.is_ddp:
         #     torch.cuda.synchronize()
-        
+
         if self.multimodal: #MM
             sample, modality, label = batch
         else:
@@ -580,20 +628,69 @@ class CustomRunner(dl.Runner):
                 y_hat = self.model.forward(sample) if not self.masked else self.model.forward(sample, modality)
                 loss = self.criterion(y_hat, label.float())
                 loss.backward()
+                # --- GRADIENT MASKING ---                                      ### CLAUDE & LISA 20260608
+                # Zero gradients for weights no modality in this batch actually
+                # used, so they don't corrupt other modalities' subnetworks.
+                if self.masked:
+                    self.model.mask_gradients(torch.unique(modality))           ### CLAUDE & LISA 20260608
+                # ------------------------
                 self.optimizer.step()
                 self.scheduler.step()
                 self.optimizer.zero_grad()
+
+                ### ADDED START - comparison model forward/backward
+                if self.masked and self.compare_mask_gradients:
+                    # Initialize scheduler lazily on first step
+                    if self.comparison_scheduler is None:
+                        self.comparison_scheduler = OneCycleLR(
+                            self.comparison_optimizer,
+                            max_lr=self.onecycle_lr,
+                            div_factor=100,
+                            pct_start=0.1,
+                            epochs=self.num_epochs,
+                            steps_per_epoch=len(self.loaders["train"]),
+                        )
+                    self.comparison_model.to(sample.device)
+                    y_hat_comp = self.comparison_model.forward(sample, modality)
+                    loss_comp = self.criterion(y_hat_comp, label.float())
+                    loss_comp.backward()
+                    # Deliberately NO mask_gradients call here
+                    self.comparison_optimizer.step()
+                    self.comparison_scheduler.step()
+                    self.comparison_optimizer.zero_grad()
+
+                    with torch.no_grad():
+                        proba_comp = torch.sigmoid(y_hat_comp)
+                        preds_comp = proba_comp > 0.5
+                        acc_comp = (preds_comp == label).float().mean()
+                        self.comparison_meters["loss"].update(loss_comp.item(), sample.shape[0])
+                        self.comparison_meters["accuracy"].update(acc_comp.item(), sample.shape[0])
+                        self.comparison_meters["auc"].update(proba_comp, label)
+                ### ADDED END - comparison model forward/backward
+
         else:
             with torch.no_grad():
                 y_hat = self.model.forward(sample) if not self.masked else self.model.forward(sample, modality)
                 loss = self.criterion(y_hat, label.float())
+
+                ### ADDED START - comparison model eval pass
+                if self.masked and self.compare_mask_gradients:
+                    y_hat_comp = self.comparison_model.forward(sample, modality)
+                    loss_comp = self.criterion(y_hat_comp, label.float())
+                    proba_comp = torch.sigmoid(y_hat_comp)
+                    preds_comp = proba_comp > 0.5
+                    acc_comp = (preds_comp == label).float().mean()
+                    self.comparison_meters["loss"].update(loss_comp.item(), sample.shape[0])
+                    self.comparison_meters["accuracy"].update(acc_comp.item(), sample.shape[0])
+                    self.comparison_meters["auc"].update(proba_comp, label)
+                ### ADDED END - comparison model eval pass
 
         # Metrics calculation and CSV logging
         with torch.no_grad():
             proba_preds = torch.sigmoid(y_hat)
             preds = proba_preds > 0.5
             accuracy = (preds == label).float().mean()
-            
+
             # CSV logging: Move to CPU / Numpy
             probs_np = proba_preds.detach().cpu().numpy().flatten()
             targets_np = label.detach().cpu().numpy().flatten()
@@ -604,7 +701,7 @@ class CustomRunner(dl.Runner):
 
         self.batch_metrics.update({
             "loss": loss,
-            "accuracy": accuracy, 
+            "accuracy": accuracy,
             "learning rate": torch.tensor(
                     self.optimizer.param_groups[0]["lr"]
             )
@@ -677,7 +774,7 @@ def main(cfg: DictConfig):
     for fold_idx in range(cfg.experiment.cv_folds):
         subvolume_shape = [cubesizes] * 3
         onecycle_lr = rmsprop_lr = (
-            attenuates 
+            attenuates
             * 1
             * cfg.experiment.lr_scale
             * numcubes

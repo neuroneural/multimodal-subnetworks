@@ -130,6 +130,38 @@ class MultiMaskSNIPWrapper(nn.Module):
                     if isinstance(param_module, MultimodalSNIPMask):
                         param_module.active_mod_id = mod_id
 
+    def mask_gradients(self, active_modalities):
+        """
+        Call after loss.backward() and before optimizer.step().
+
+        Zeros out gradients for any weight that was masked to 0 for ALL
+        modalities in the current batch. This prevents a modality from
+        nudging weights it never actually used during the forward pass.
+
+        Args:
+            active_modalities: tensor of modality integer codes present in
+                               the current batch (e.g. from torch.unique(modality))
+        """
+        for module in self.model.modules():
+            if parametrize.is_parametrized(module, "weight"):
+                if module.parametrizations.weight.original.grad is None:
+                    continue
+                # Build the union of masks for every modality in this batch.
+                # A weight is in the union if ANY modality's mask is 1 for it.
+                union_mask = torch.zeros_like(module.parametrizations.weight.original.data)
+                for param_module in module.parametrizations.weight:
+                    if isinstance(param_module, MultimodalSNIPMask):
+                        for mod in active_modalities:
+                            mod_key = int(mod)
+                            if hasattr(param_module, f'mask_{mod_key}'):
+                                union_mask = torch.logical_or(
+                                    union_mask.bool(),
+                                    getattr(param_module, f'mask_{mod_key}').bool()
+                                ).float()
+                # Zero out gradients for weights outside the union mask.
+                # These weights contributed nothing to any forward pass this step.
+                module.parametrizations.weight.original.grad *= union_mask
+
     def prepare_for_loading(self, modalities_list):
         """
         Pre-initializes structure for loading state_dict.
