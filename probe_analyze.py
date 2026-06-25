@@ -82,12 +82,16 @@ def report_seed_and_world(metas):
         print("  (no meta files found)")
         return
 
-    # tsr.SEED == the real sampler seed. Must be identical across ranks.
-    seeds = {r: rows[r]["tsr_SEED"] for r in sorted(rows)}
-    print(f"  tsr.SEED per rank: {seeds}")
+    # PRIMARY check: the seed ACTUALLY fed to the sampler must be identical
+    # across ranks (falls back to tsr_SEED for older logs without sampler_seed).
+    seed_key = "sampler_seed" if all("sampler_seed" in rows[r] for r in rows) else "tsr_SEED"
+    src = rows[next(iter(rows))].get("seed_source")
+    seeds = {r: rows[r][seed_key] for r in sorted(rows)}
     seed_ok = len(set(seeds.values())) == 1
-    print(f"  [{'PASS' if seed_ok else 'FAIL'}] all ranks share the same tsr.SEED "
-          f"{'' if seed_ok else '<-- DistributedDBBatchSampler partition is INVALID if this fails'}")
+    print(f"  sampler seed per rank ({seed_key}"
+          f"{', seed_source='+src if src else ''}): {seeds}")
+    print(f"  [{'PASS' if seed_ok else 'FAIL'}] all ranks share the same sampler seed "
+          f"{'' if seed_ok else '<-- sampler partition is INVALID if this fails'}")
 
     # Controls from the seed experiment (only present if the probe logged them).
     if all("module_seed" in rows[r] for r in rows):
@@ -116,11 +120,13 @@ def report_seed_and_world(metas):
               f"catalyst={d['catalyst_world_size']} "
               f"env_WORLD_SIZE={d['env_WORLD_SIZE']} "
               f"engine_num_processes={d['engine_num_processes']}")
-    # agreement among the numeric sources actually defined
+    # Agreement among the ACTUAL DDP world-size sources. cuda_device_count is
+    # deliberately EXCLUDED: on this cluster CUDA_VISIBLE_DEVICES is unset so it
+    # reports all physical GPUs on the node, not the allocation -> reported below
+    # as informational only.
     def collect_ws(d):
         vals = []
-        for k in ("cuda_device_count", "torch_dist_world_size", "catalyst_world_size",
-                  "engine_num_processes"):
+        for k in ("torch_dist_world_size", "catalyst_world_size", "engine_num_processes"):
             v = d.get(k)
             if isinstance(v, int) and v > 0:
                 vals.append(v)
@@ -133,13 +139,27 @@ def report_seed_and_world(metas):
     for r in rows:
         all_ws |= collect_ws(rows[r])
     ws_ok = len(all_ws) == 1
-    print(f"  [{'PASS' if ws_ok else 'FAIL'}] world-size sources agree: {sorted(all_ws)}")
+    print(f"  [{'PASS' if ws_ok else 'FAIL'}] DDP world-size sources agree (excl. cuda_device_count): {sorted(all_ws)}")
+    phys = sorted({rows[r]["cuda_device_count"] for r in rows})
+    print(f"  cuda_device_count (physical GPUs visible, informational): {phys}")
 
     print("  loader after engine.prepare (double-shard / re-wrap check):")
+    reshard_flag = False
+    seen = set()
     for r in sorted(rows):
         for m in metas[r]:
-            print(f"    rank {r} [{m['loader']}]: type={m['loader_type_after_prepare']} "
-                  f"len={m['loader_len']} sampler={m['sampler_type']}")
+            key = (m["rank"], m["loader"])
+            if key in seen:
+                continue
+            seen.add(key)
+            t, s = m["loader_type_after_prepare"], m["sampler_type"]
+            if t == "DataLoaderShard" or s == "SequentialSampler":
+                reshard_flag = True
+            print(f"    rank {r} [{m['loader']}]: type={t} len={m['loader_len']} sampler={s}")
+    if reshard_flag:
+        print("  [WARN] engine.prepare returned DataLoaderShard/SequentialSampler -> accelerate")
+        print("         RE-SHARDS the loader by world_size on top of your sampler. A pre-sharding")
+        print("         sampler (DistributedDBBatchSampler) is therefore DOUBLE-sharded -> data dropped.")
     print()
 
 

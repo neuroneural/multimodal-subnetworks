@@ -31,10 +31,11 @@ echo "Job ID: $SLURM_JOB_ID" >&2
 echo "SLURM_GPUS_ON_NODE: $SLURM_GPUS_ON_NODE" >&2
 
 SAMPLER="${1:-current}"          # current | old
+SEED_SOURCE="${2:-fixed}"        # fixed (the fix) | module (reproduce the bug)
 N="${PROBE_N:-200}"
 BS="${PROBE_BS:-4}"
 EPOCHS="${PROBE_EPOCHS:-2}"
-LOGDIR="./_probe_out/job_${SLURM_JOB_ID}_gpus${SLURM_GPUS_ON_NODE}_${SAMPLER}"
+LOGDIR="./_probe_out/job_${SLURM_JOB_ID}_gpus${SLURM_GPUS_ON_NODE}_${SAMPLER}_${SEED_SOURCE}"
 
 # Conda environment setup (same env as the real training job)
 source /data/users2/ppopov1/miniconda/bin/activate catalyst12
@@ -46,7 +47,8 @@ python probe_ddp_catalyst.py \
   --n "$N" \
   --batch-size "$BS" \
   --epochs "$EPOCHS" \
-  --sampler "$SAMPLER"
+  --sampler "$SAMPLER" \
+  --seed-source "$SEED_SOURCE"
 
 echo "=========== ANALYSIS ($SAMPLER, ${SLURM_GPUS_ON_NODE} GPUs) ==========="
 # the runner nests one more level (sampler_n.._bs..); analyze that leaf dir(s)

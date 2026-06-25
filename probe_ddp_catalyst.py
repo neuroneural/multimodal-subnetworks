@@ -104,7 +104,8 @@ class IndexDataset(Dataset):
 
 
 class ProbeRunner(dl.Runner):
-    def __init__(self, logdir, n, batch_size, epochs, sampler_kind, num_workers, guard_seed):
+    def __init__(self, logdir, n, batch_size, epochs, sampler_kind, num_workers,
+                 guard_seed, seed_source="fixed"):
         super().__init__()
         self._logdir = logdir
         self._n = n
@@ -115,16 +116,22 @@ class ProbeRunner(dl.Runner):
         # drawn under the __main__ guard in main(), shipped here by pickling ->
         # expected identical on every rank (contrast with MODULE_SEED / tsr.SEED)
         self._guard_seed = guard_seed
+        self._seed_source = seed_source    # "fixed" (the fix) or "module" (the bug)
         os.makedirs(logdir, exist_ok=True)
 
     # ---- mirror CustomRunner's engine decision exactly ----
     def get_engine(self):
         if os.environ.get("PROBE_FORCE_CPU") == "1":
             return dl.CPUEngine()
+        # SLURM_GPUS_ON_NODE is the reliable allocated-GPU count; device_count()
+        # over-reports here (CUDA_VISIBLE_DEVICES unset). Pin spawn/world size to it
+        # via num_node_workers/world_size, else the engine forks 1 proc per physical GPU.
         n_gpus = int(os.environ.get("SLURM_GPUS_ON_NODE", torch.cuda.device_count()))
         if n_gpus > 1:
             return dl.DistributedDataParallelEngine(
                 process_group_kwargs={"backend": os.environ.get("PROBE_BACKEND", "nccl")},
+                num_node_workers=n_gpus,
+                world_size=n_gpus,
             )
         return dl.GPUEngine() if torch.cuda.is_available() else dl.CPUEngine()
 
@@ -158,26 +165,34 @@ class ProbeRunner(dl.Runner):
             loader = BatchPrefetchLoaderWrapper(loader, num_prefetches=2)
         return loader
 
+    def _sampler_seed(self):
+        # "fixed" (the fix): a seed drawn under the __main__ guard and passed in
+        #   -> identical on every rank (matches the train_script_rev fix).
+        # "module" (the bug): the module-level SEED, re-drawn per worker by
+        #   mp.spawn -> differs per rank.
+        return self._guard_seed if self._seed_source == "fixed" else tsr.SEED
+
     def get_loaders(self):
         rank, world_size = tsr.get_rank_world()
+        seed = self._sampler_seed()
 
         # TRAIN: sharded sampler under DDP (the thing we are validating),
         # exactly as train_script_rev does.
         if self._sampler_kind == "current" and self.engine.is_ddp:
             train_sampler = tsr.DistributedDBBatchSampler(
                 IndexDataset(self._n), batch_size=self._batch_size,
-                seed=tsr.SEED, rank=rank, world_size=world_size,
+                seed=seed, rank=rank, world_size=world_size,
             )
         else:
             # "old" path (commit 5fb4306 DDP) or single-GPU: plain sampler.
             train_sampler = DBBatchSampler(
-                IndexDataset(self._n), batch_size=self._batch_size, seed=tsr.SEED,
+                IndexDataset(self._n), batch_size=self._batch_size, seed=seed,
             )
 
         # VALID: plain DBBatchSampler even under DDP — mirrors the real code,
         # so the probe also reveals that validation is duplicated across ranks.
         valid_sampler = DBBatchSampler(
-            IndexDataset(self._n), batch_size=self._batch_size, seed=tsr.SEED,
+            IndexDataset(self._n), batch_size=self._batch_size, seed=seed,
         )
 
         return {
@@ -211,7 +226,9 @@ class ProbeRunner(dl.Runner):
             "loader": self.loader_key,
             "sampler_kind": self._sampler_kind,
             "rank": rank,
-            "tsr_SEED": int(tsr.SEED),          # the REAL sampler seed (module-level)
+            "seed_source": self._seed_source,        # "fixed" (the fix) or "module" (the bug)
+            "sampler_seed": int(self._sampler_seed()),  # the seed ACTUALLY fed to the sampler
+            "tsr_SEED": int(tsr.SEED),          # control: module-level -> expect DIFFERENT per rank
             "module_seed": int(MODULE_SEED),    # control: module-level -> expect DIFFERENT per rank
             "guard_seed": int(self._guard_seed),  # control: guard-level -> expect SAME per rank
             "is_ddp": bool(self.engine.is_ddp),
@@ -286,16 +303,19 @@ def main():
     ap.add_argument("--sampler", choices=["current", "old"], default="current",
                     help="'current' = DistributedDBBatchSampler; 'old' = plain DBBatchSampler (5fb4306 DDP path)")
     ap.add_argument("--num-workers", type=int, default=0)
+    ap.add_argument("--seed-source", choices=["fixed", "module"], default="fixed",
+                    help="'fixed' = guard seed passed in, identical per rank (the fix); "
+                         "'module' = module-level SEED, differs per rank (reproduces the bug)")
     args = ap.parse_args()
 
-    logdir = os.path.join(args.logdir, f"{args.sampler}_n{args.n}_bs{args.batch_size}")
+    logdir = os.path.join(args.logdir, f"{args.sampler}_{args.seed_source}_n{args.n}_bs{args.batch_size}")
     os.makedirs(logdir, exist_ok=True)
 
     # Drawn UNDER the guard, in the real __main__ parent only. Spawned workers
     # never re-run this; they receive it via the pickled runner -> same on all.
     guard_seed = random.randint(0, 9999)
 
-    print(f"[probe] logdir={logdir} sampler={args.sampler} n={args.n} "
+    print(f"[probe] logdir={logdir} sampler={args.sampler} seed_source={args.seed_source} n={args.n} "
           f"batch_size={args.batch_size} epochs={args.epochs} "
           f"SLURM_GPUS_ON_NODE={os.environ.get('SLURM_GPUS_ON_NODE')} "
           f"tsr.SEED(parent)={tsr.SEED} MODULE_SEED(parent)={MODULE_SEED} guard_seed={guard_seed}")
@@ -303,7 +323,7 @@ def main():
     runner = ProbeRunner(
         logdir=logdir, n=args.n, batch_size=args.batch_size,
         epochs=args.epochs, sampler_kind=args.sampler, num_workers=args.num_workers,
-        guard_seed=guard_seed,
+        guard_seed=guard_seed, seed_source=args.seed_source,
     )
     runner.run()
     print(f"[probe] done. Analyze with:  python probe_analyze.py {logdir}")
