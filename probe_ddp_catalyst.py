@@ -32,6 +32,9 @@ Outputs (in --logdir):
 
 from __future__ import annotations
 
+import warnings
+warnings.filterwarnings("ignore")  # quiet pynvml/pydantic import warnings (before torch import)
+
 import argparse
 import csv
 import json
@@ -132,6 +135,13 @@ class ProbeRunner(dl.Runner):
     @property
     def seed(self) -> int:
         return 42  # fixed; the sampler seed is tsr.SEED, tracked separately
+
+    def get_loggers(self):
+        # Override to {} like CustomRunner does. The base Runner.get_loggers()
+        # reads self._loggers, which the base __init__ never sets -> AttributeError.
+        # The probe writes its own per-rank CSVs, so it needs no Catalyst loggers
+        # (also avoids the tensorboard/csv loggers the base would auto-add).
+        return {}
 
     def _build_loader(self, sampler):
         kwargs = dict(
