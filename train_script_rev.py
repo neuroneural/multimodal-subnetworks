@@ -359,11 +359,11 @@ class CustomRunner(dl.Runner):
         if self.engine.is_ddp:
             rank, world_size = get_rank_world()
             train_sampler = DistributedDBBatchSampler(
-                train_dataset, batch_size=self.num_volumes, seed=cv_seed,
+                train_dataset, batch_size=self.num_volumes, seed=SEED,
                 rank=rank, world_size=world_size,
             )
         else:
-            train_sampler = DBBatchSampler(train_dataset, batch_size=self.num_volumes, seed=cv_seed)
+            train_sampler = DBBatchSampler(train_dataset, batch_size=self.num_volumes, seed=SEED)
 
         train_loader_kwargs = {
             "sampler": train_sampler,
@@ -390,7 +390,7 @@ class CustomRunner(dl.Runner):
             id=self.index_id,
         )
 
-        valid_sampler = DBBatchSampler(valid_dataset, batch_size=self.num_volumes, seed=cv_seed)
+        valid_sampler = DBBatchSampler(valid_dataset, batch_size=self.num_volumes, seed=SEED)
         valid_loader_kwargs = {
             "sampler": valid_sampler,
             "collate_fn": self.collate,
@@ -415,7 +415,7 @@ class CustomRunner(dl.Runner):
             normalize=safe_normalize,
             id=self.index_id,
         )
-        test_sampler = DBBatchSampler(test_dataset, batch_size=self.num_volumes, seed=cv_seed)
+        test_sampler = DBBatchSampler(test_dataset, batch_size=self.num_volumes, seed=SEED)
         test_loader_kwargs = {
             "sampler": test_sampler,
             "collate_fn": self.collate,
