@@ -371,16 +371,16 @@ class CustomRunner(dl.Runner):
             id=self.index_id,
         )
         
-        # NOTE: cv_seed (config) is used only for the CV splits above. The
-        # sampler seed is self.sampler_seed (same value on every rank).
-        if self.engine.is_ddp:
-            rank, world_size = get_rank_world()
-            train_sampler = DistributedDBBatchSampler(
-                train_dataset, batch_size=self.num_volumes, seed=self.sampler_seed,
-                rank=rank, world_size=world_size,
-            )
-        else:
-            train_sampler = DBBatchSampler(train_dataset, batch_size=self.num_volumes, seed=self.sampler_seed)
+        # Train uses a plain DBBatchSampler with a cross-rank-consistent seed
+        # (self.sampler_seed, identical on every rank). Catalyst/accelerate's
+        # engine.prepare() ALREADY shards the DataLoader across ranks, so a plain
+        # sampler with the same seed yields a clean disjoint partition with full
+        # coverage (verified by the DDP probe: 100% coverage, disjoint, balanced).
+        # DistributedDBBatchSampler is intentionally NOT used here: it pre-shards,
+        # and accelerate then shards again -> double-sharding that drops
+        # ~(1 - 1/world_size) of the data each epoch.
+        # cv_seed (config) is used only for the CV splits above.
+        train_sampler = DBBatchSampler(train_dataset, batch_size=self.num_volumes, seed=self.sampler_seed)
 
         train_loader_kwargs = {
             "sampler": train_sampler,
