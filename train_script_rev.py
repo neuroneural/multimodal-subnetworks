@@ -488,15 +488,22 @@ class CustomRunner(dl.Runner):
             use_warmup_masks = self._hparams["model"].get("warmup_mask_init", False)
             unimodal_paths = self._hparams["model"].get("unimodal_model_paths", None)
 
+            MOD_NAME_TO_INT = {"smri": 0, "falff": 1, "dwi": 2}
+
             if use_warmup_masks and unimodal_paths:
                 print("Using warmup mask initialization from dense unimodal checkpoints...")
                 print(f"Unimodal paths config: {unimodal_paths}")
 
                 unimodal_checkpoints = {}
-                for mod_id, path in unimodal_paths.items():
+                for mod_name, path in unimodal_paths.items():
+                    if path is None:
+                        continue
+                    int_mod_id = MOD_NAME_TO_INT.get(mod_name)
+                    if int_mod_id is None:
+                        raise ValueError(f"Unknown modality name '{mod_name}', expected one of {list(MOD_NAME_TO_INT)}")
                     if os.path.exists(path):
-                        print(f"Loading dense unimodal checkpoint for modality {mod_id} from {path}")
-                        unimodal_checkpoints[int(mod_id)] = torch.load(path, map_location='cpu')
+                        print(f"Loading dense unimodal checkpoint for modality {mod_name} ({int_mod_id}) from {path}")
+                        unimodal_checkpoints[int_mod_id] = torch.load(path, map_location='cpu')
                     else:
                         raise FileNotFoundError(f"Unimodal model path not found: {path}")
 

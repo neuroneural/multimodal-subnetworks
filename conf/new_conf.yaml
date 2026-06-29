@@ -30,7 +30,10 @@ model:
   loss_weight: [0.5, 0.5]
   smart_init: False
   warmup_mask_init: False
-  unimodal_model_paths: {}  # {mod_id_int: /path/to/model.best.pth}, used by smart_init and warmup_mask_init
+  unimodal_model_paths:  # used by smart_init and warmup_mask_init; override per-key on CLI
+    falff: null
+    smri: null
+    dwi: null
 
 paths:
   loadcheckpoint: False
