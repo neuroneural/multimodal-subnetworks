@@ -187,6 +187,70 @@ class MultiMaskSNIPWrapper(nn.Module):
         topk_scores, _ = torch.topk(global_scores, num_params_to_keep, sorted=True)
         return topk_scores[-1]
 
+    def register_masks_from_dense_checkpoints(self, unimodal_checkpoints_dict, snip_data):
+        """
+        Compute per-modality SNIP masks from fully-trained dense unimodal checkpoints.
+
+        Loads each modality's dense checkpoint into a temp model and runs SNIP on those
+        mature weights. Masks reflect genuine task structure rather than random-init noise.
+
+        Args:
+            unimodal_checkpoints_dict: {mod_id (int) -> state_dict from dense unimodal model}
+            snip_data: (input_data, modalities_tensor, labels) minibatch
+        """
+        input_data, modalities_tensor, labels = snip_data
+        target_device = next(iter(self.model.parameters())).device
+        temp_mask_storage = {}
+
+        for mod_id, state_dict in unimodal_checkpoints_dict.items():
+            int_mod_id = int(mod_id)
+            print(f"Computing SNIP mask for modality {int_mod_id} from dense checkpoint...")
+
+            temp_model = deepcopy(self.model).to(target_device)
+            temp_optimizer = torch.optim.SGD(temp_model.parameters(), 0.1)
+
+            # Strip 'model.' prefix if present; skip any stray parametrization keys
+            stripped_state = {
+                (k[len('model.'):] if k.startswith('model.') else k): v
+                for k, v in state_dict.items()
+                if 'parametrizations' not in k
+            }
+            temp_model.load_state_dict(stripped_state, strict=False)
+
+            # Use only samples for this modality in the SNIP batch
+            mask_idx = (modalities_tensor == int_mod_id)
+            if mask_idx.sum() == 0:
+                print(f"  Warning: no samples for modality {int_mod_id} in snip_data, using full batch")
+                mask_idx = torch.ones(len(modalities_tensor), dtype=torch.bool)
+
+            batch = (
+                input_data[mask_idx].to(target_device),
+                labels[mask_idx].to(target_device),
+            )
+            temp_mask_storage[int_mod_id] = self._generate_mask_from_grad_scores(
+                temp_model, temp_optimizer, batch, target_device
+            )
+
+            del temp_model, temp_optimizer
+            if target_device.type == 'cuda':
+                torch.cuda.empty_cache()
+
+        print("Registering warmup masks...")
+        for name, module in self.model.named_modules():
+            if isinstance(module, PRUNE_LAYERS):
+                layer_masks = {
+                    mod_id: mask_dict[name]
+                    for mod_id, mask_dict in temp_mask_storage.items()
+                    if name in mask_dict
+                }
+                if layer_masks:
+                    parametrize.register_parametrization(
+                        module, "weight", MultimodalSNIPMask(layer_masks)
+                    )
+
+        self.masks_registered = True
+        print("Warmup mask registration complete.")
+
     def initialize_from_unimodal_models(self, unimodal_models_dict, snip_data=None):
         """
         Initialize the multimodal sparse model from trained unimodal sparse models.

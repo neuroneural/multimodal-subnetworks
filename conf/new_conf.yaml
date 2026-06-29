@@ -25,9 +25,12 @@ model:
   volume_shape: [256, 256, 256]
   maxshape: 300
   optimize_inline: False
-  use_groupnorm: False  
-  use_me: True  
-  loss_weight: [0.5, 0.5]  
+  use_groupnorm: False
+  use_me: True
+  loss_weight: [0.5, 0.5]
+  smart_init: False
+  warmup_mask_init: False
+  unimodal_model_paths: {}  # {mod_id_int: /path/to/model.best.pth}, used by smart_init and warmup_mask_init
 
 paths:
   loadcheckpoint: False

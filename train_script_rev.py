@@ -485,9 +485,29 @@ class CustomRunner(dl.Runner):
             )
 
             use_smart_init = self._hparams["model"].get("smart_init", False)
+            use_warmup_masks = self._hparams["model"].get("warmup_mask_init", False)
             unimodal_paths = self._hparams["model"].get("unimodal_model_paths", None)
 
-            if use_smart_init and unimodal_paths:
+            if use_warmup_masks and unimodal_paths:
+                print("Using warmup mask initialization from dense unimodal checkpoints...")
+                print(f"Unimodal paths config: {unimodal_paths}")
+
+                unimodal_checkpoints = {}
+                for mod_id, path in unimodal_paths.items():
+                    if os.path.exists(path):
+                        print(f"Loading dense unimodal checkpoint for modality {mod_id} from {path}")
+                        unimodal_checkpoints[int(mod_id)] = torch.load(path, map_location='cpu')
+                    else:
+                        raise FileNotFoundError(f"Unimodal model path not found: {path}")
+
+                snip_data, snip_modalities, snip_labels = self.snip_data
+                model.register_masks_from_dense_checkpoints(
+                    unimodal_checkpoints,
+                    snip_data=(snip_data, snip_modalities, snip_labels),
+                )
+                print("Warmup mask initialization complete!")
+
+            elif use_smart_init and unimodal_paths:
                 print("Using smart initialization from unimodal models...")
                 print(f"Unimodal paths config: {unimodal_paths}")
 
@@ -507,6 +527,7 @@ class CustomRunner(dl.Runner):
                     snip_data=(snip_data, snip_modalities, snip_labels)
                 )
                 print("Smart initialization complete!")
+
             else:
                 print("Initializing masks from scratch using SNIP...")
                 snip_data, snip_modalities, snip_labels = self.snip_data
