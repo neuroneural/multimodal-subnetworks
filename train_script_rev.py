@@ -618,6 +618,9 @@ class CustomRunner(dl.Runner):
             for key in self._metric_keys
         }
         self.meters["auc"] = metrics.AUCMetric(compute_on_call=False)
+        if self.multimodal:
+            for mod_id in [0, 1, 2]:
+                self.meters[f"auc_mod_{mod_id}"] = metrics.AUCMetric(compute_on_call=False)
 
         rank = distributed.get_rank()
         loader_key = self.loader_key
@@ -626,16 +629,29 @@ class CustomRunner(dl.Runner):
         self.csv_file = open(self.csv_filename, "a", newline="")
         self.csv_writer = csv.writer(self.csv_file)
         if not file_exists:
-            self.csv_writer.writerow(["epoch", "probability", "target"])
+            if self.multimodal:
+                self.csv_writer.writerow(["epoch", "probability", "target", "modality"])
+            else:
+                self.csv_writer.writerow(["epoch", "probability", "target"])
 
     def on_loader_end(self, runner):
         for key in self._metric_keys:
             self.loader_metrics[key] = self.meters[key].compute()[0]
         self.loader_metrics["auc"] = self.meters["auc"].compute()[2]
+        if self.multimodal:
+            for mod_id in [0, 1, 2]:
+                key = f"auc_mod_{mod_id}"
+                try:
+                    self.loader_metrics[key] = self.meters[key].compute()[2]
+                except Exception:
+                    self.loader_metrics[key] = 0.0
 
         if self.engine.is_ddp:
             world_size = distributed.get_world_size()
-            for key in ["loss", "accuracy", "auc"]:
+            ddp_keys = ["loss", "accuracy", "auc"]
+            if self.multimodal:
+                ddp_keys += [f"auc_mod_{m}" for m in [0, 1, 2]]
+            for key in ddp_keys:
                 local_val = self.loader_metrics[key]
                 val_tensor = torch.tensor([local_val], device=self.engine.device)
                 avg_tensor = distributed.mean_reduce(val_tensor, world_size)
@@ -682,7 +698,18 @@ class CustomRunner(dl.Runner):
             accuracy = (preds == label).float().mean()
             probs_np = proba_preds.detach().cpu().numpy().flatten()
             targets_np = label.detach().cpu().numpy().flatten()
-            self.csv_writer.writerows(zip([self.epoch_step] * len(probs_np), probs_np, targets_np))
+            if self.multimodal and modality is not None:
+                mods_np = modality.detach().cpu().numpy().flatten()
+                self.csv_writer.writerows(zip([self.epoch_step] * len(probs_np), probs_np, targets_np, mods_np))
+            else:
+                self.csv_writer.writerows(zip([self.epoch_step] * len(probs_np), probs_np, targets_np))
+
+            if self.multimodal and modality is not None:
+                for mod_id in torch.unique(modality).cpu().tolist():
+                    mod_id = int(mod_id)
+                    mod_mask = (modality == mod_id)
+                    if mod_mask.any() and f"auc_mod_{mod_id}" in self.meters:
+                        self.meters[f"auc_mod_{mod_id}"].update(proba_preds[mod_mask], label[mod_mask])
 
         self.batch_metrics.update({
             "loss": loss,
