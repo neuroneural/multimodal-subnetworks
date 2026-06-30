@@ -4,7 +4,7 @@
 #SBATCH -c 12
 #SBATCH --mem=128g
 #SBATCH -p qTRDGPUH
-#SBATCH -t 04:00:00
+#SBATCH -t 120:00:00
 #SBATCH --gres=gpu:1
 #SBATCH -J fm_warmup_test
 #SBATCH -D /data/users2/jwardell1/multimodal-subnetworks
@@ -33,7 +33,7 @@ python3 train_script_rev.py \
     experiment.dbfields=[falff,smri,dwi] \
     experiment.metafields=[gender_encoded] \
     experiment.cv_folds=10 \
-    experiment.max_folds=1 \
+    experiment.max_folds=10 \
     model.masked=True \
     model.warmup_mask_init=True \
     model.sparsity=0.7 \
@@ -56,7 +56,7 @@ python3 train_script_rev.py \
     experiment.timing_sync_cuda=False \
     experiment.cudnn_benchmark=False \
     experiment.lr_scale=0.005 \
-    experiment.epochs=5
+    experiment.epochs=100
 
 sleep 10s
 echo "Job $SLURM_JOB_ID completed"
