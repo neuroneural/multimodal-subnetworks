@@ -370,3 +370,119 @@ class MultiMaskSNIPWrapper(nn.Module):
                 print(f"Layer {name}: combined mask sparsity = {1 - combined_mask.mean().item():.2%}")
 
         print("Initialization complete!")
+    def register_disjoint_masks_from_dense_checkpoints(self, unimodal_checkpoints_dict, snip_data):
+        """
+        Sanity-test variant of warmup mask init that enforces fully disjoint masks.
+
+        For each weight position, the modality with the highest SNIP score (computed
+        from its trained unimodal checkpoint) wins exclusive ownership. Sparsity is
+        applied within each modality's owned region, keeping the same total active-
+        weight budget as the standard approach. Weights are initialised from each
+        unimodal checkpoint for its owned positions.
+
+        With disjoint masks there is zero cross-modality gradient interference by
+        construction, so per-modality AUC should match or exceed unimodal baselines.
+        """
+        input_data, modalities_tensor, labels = snip_data
+        target_device = next(iter(self.model.parameters())).device
+        mod_ids = sorted([int(m) for m in unimodal_checkpoints_dict.keys()])
+
+        # Step 1: raw SNIP scores + unimodal weights, one temp model per modality
+        raw_scores = {}       # {mod_id: {layer_name: score_tensor}}
+        unimodal_weights = {} # {mod_id: {layer_name: weight_tensor}}
+
+        for mod_id in mod_ids:
+            state_dict = unimodal_checkpoints_dict[mod_id]
+            print(f"Computing SNIP scores for modality {mod_id} from dense checkpoint...")
+
+            temp_model = deepcopy(self.model).to(target_device)
+            temp_optimizer = torch.optim.SGD(temp_model.parameters(), 0.1)
+
+            stripped_state = {
+                (k[len('model.'):] if k.startswith('model.') else k): v
+                for k, v in state_dict.items()
+                if 'parametrizations' not in k
+            }
+            temp_model.load_state_dict(stripped_state, strict=False)
+
+            for name, module in temp_model.named_modules():
+                if isinstance(module, PRUNE_LAYERS):
+                    unimodal_weights.setdefault(mod_id, {})[name] = module.weight.data.cpu().clone()
+
+            mask_idx = (modalities_tensor == mod_id)
+            if mask_idx.sum() == 0:
+                mask_idx = torch.ones(len(modalities_tensor), dtype=torch.bool)
+
+            batch = (
+                input_data[mask_idx].to(target_device),
+                labels[mask_idx].to(target_device),
+            )
+            raw_scores[mod_id] = self._calculate_scores(temp_model, temp_optimizer, batch)
+
+            del temp_model, temp_optimizer
+            if target_device.type == 'cuda':
+                torch.cuda.empty_cache()
+
+        # Step 2: per-layer argmax partition → disjoint binary masks
+        print("Computing disjoint masks via argmax partition...")
+        temp_mask_storage = {mod_id: {} for mod_id in mod_ids}
+
+        for name, module in self.model.named_modules():
+            if not isinstance(module, PRUNE_LAYERS):
+                continue
+            if name not in raw_scores[mod_ids[0]]:
+                continue
+
+            # [n_mods, *weight_shape]
+            layer_scores = torch.stack([raw_scores[m][name] for m in mod_ids], dim=0)
+            winner = layer_scores.argmax(dim=0)  # weight_shape — index into mod_ids
+
+            for idx, mod_id in enumerate(mod_ids):
+                owned = (winner == idx)
+                n_owned = int(owned.sum().item())
+
+                if n_owned == 0:
+                    temp_mask_storage[mod_id][name] = torch.zeros_like(layer_scores[0])
+                    continue
+
+                n_keep = max(1, int(n_owned * (1.0 - self.sparsity)))
+                owned_scores = raw_scores[mod_id][name][owned]
+                topk_val, _ = torch.topk(owned_scores, n_keep, sorted=True)
+                threshold = topk_val[-1]
+
+                disjoint_mask = (owned & (raw_scores[mod_id][name] >= threshold)).float()
+                temp_mask_storage[mod_id][name] = disjoint_mask.to(target_device)
+
+        # Step 3: register parametrizations
+        print("Registering disjoint masks...")
+        for name, module in self.model.named_modules():
+            if isinstance(module, PRUNE_LAYERS):
+                layer_masks = {
+                    mod_id: temp_mask_storage[mod_id][name]
+                    for mod_id in mod_ids
+                    if name in temp_mask_storage[mod_id]
+                }
+                if layer_masks:
+                    parametrize.register_parametrization(
+                        module, "weight", MultimodalSNIPMask(layer_masks)
+                    )
+
+        self.masks_registered = True
+
+        # Step 4: initialise weights — each position takes weights from its owning modality
+        print("Initialising weights from unimodal checkpoints...")
+        for name, module in self.model.named_modules():
+            if not (isinstance(module, PRUNE_LAYERS) and parametrize.is_parametrized(module, "weight")):
+                continue
+            device = module.parametrizations.weight.original.data.device
+            merged = torch.zeros_like(module.parametrizations.weight.original.data)
+
+            for mod_id in mod_ids:
+                if name in temp_mask_storage[mod_id] and name in unimodal_weights.get(mod_id, {}):
+                    mask = temp_mask_storage[mod_id][name].to(device)
+                    w = unimodal_weights[mod_id][name].to(device)
+                    merged += w * mask
+
+            module.parametrizations.weight.original.data.copy_(merged)
+
+        print("Disjoint mask registration complete.")

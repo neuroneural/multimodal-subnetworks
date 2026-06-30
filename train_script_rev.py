@@ -486,6 +486,7 @@ class CustomRunner(dl.Runner):
 
             use_smart_init = self._hparams["model"].get("smart_init", False)
             use_warmup_masks = self._hparams["model"].get("warmup_mask_init", False)
+            use_disjoint_masks = self._hparams["model"].get("disjoint_mask_init", False)
             unimodal_paths = self._hparams["model"].get("unimodal_model_paths", None)
 
             MOD_NAME_TO_INT = {"smri": 0, "falff": 1, "dwi": 2}
@@ -513,6 +514,30 @@ class CustomRunner(dl.Runner):
                     snip_data=(snip_data, snip_modalities, snip_labels),
                 )
                 print("Warmup mask initialization complete!")
+
+            elif use_disjoint_masks and unimodal_paths:
+                print("Using disjoint mask initialization from dense unimodal checkpoints...")
+                print(f"Unimodal paths config: {unimodal_paths}")
+
+                unimodal_checkpoints = {}
+                for mod_name, path in unimodal_paths.items():
+                    if path is None:
+                        continue
+                    int_mod_id = MOD_NAME_TO_INT.get(mod_name)
+                    if int_mod_id is None:
+                        raise ValueError(f"Unknown modality name '{mod_name}', expected one of {list(MOD_NAME_TO_INT)}")
+                    if os.path.exists(path):
+                        print(f"Loading dense unimodal checkpoint for modality {mod_name} ({int_mod_id}) from {path}")
+                        unimodal_checkpoints[int_mod_id] = torch.load(path, map_location='cpu')
+                    else:
+                        raise FileNotFoundError(f"Unimodal model path not found: {path}")
+
+                snip_data, snip_modalities, snip_labels = self.snip_data
+                model.register_disjoint_masks_from_dense_checkpoints(
+                    unimodal_checkpoints,
+                    snip_data=(snip_data, snip_modalities, snip_labels),
+                )
+                print("Disjoint mask initialization complete!")
 
             elif use_smart_init and unimodal_paths:
                 print("Using smart initialization from unimodal models...")
