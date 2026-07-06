@@ -20,6 +20,9 @@ The number of ranks follows the GPUs allocated to the job (SLURM_GPUS_ON_NODE).
 Each rank prints one line; compare the columns across ranks.
 """
 
+import warnings
+warnings.filterwarnings("ignore")  # quiet pynvml FutureWarning / pydantic warnings (before torch import)
+
 import os
 import random
 
@@ -88,6 +91,12 @@ class SeedRunner(dl.Runner):
 
     def get_optimizer(self, model):
         return torch.optim.SGD(model.parameters(), lr=0.0)  # lr=0: nothing actually trains
+
+    def get_scheduler(self, optimizer):
+        return None   # base get_scheduler reads self._scheduler (unset) -> override
+
+    def get_callbacks(self):
+        return {}     # base get_callbacks reads self._callbacks (unset) -> override
 
     def on_experiment_start(self, runner):
         # super() runs engine.setup() -> dist.init_process_group(), so DDP is live after it.
