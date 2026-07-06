@@ -1,0 +1,8 @@
+Running on host: arctrddgxa003
+Job ID: 3726668
+SLURM_GPUS_ON_NODE: 4
+[parent] n_gpus(SLURM_GPUS_ON_NODE)=4  cuda.device_count()=4  passed_seed=6995  TOP_SEED=7548
+[rank 0/4] seeds@get_loaders: passed=6995   @prop=557127698   module=8961
+[rank 3/4] seeds@get_loaders: passed=6995   @prop=1648218816  module=9234
+[rank 1/4] seeds@get_loaders: passed=6995   @prop=3241034513  module=3123
+[rank 2/4] seeds@get_loaders: passed=6995   @prop=1723169778  module=9825

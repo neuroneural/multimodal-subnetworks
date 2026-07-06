@@ -1,0 +1,24 @@
+Running on host: arctrddgxa002
+Job ID: 3726672
+SLURM_GPUS_ON_NODE: 1
+[parent] n_gpus(SLURM_GPUS_ON_NODE)=1  cuda.device_count()=1  passed_seed=3016  TOP_SEED=7061  N=10  BATCH=2
+
+=== Stage 5: per-seed DDP data via DBBatchSampler (N=10, batch=2, world_size=1) ===
+
+seed source = passed
+  seed per rank : {0: 3016}
+  rank 0 data : [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  UNION         : [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]  (10/10)
+  MISSING       : []   [OK - full coverage]
+
+seed source = @prop
+  seed per rank : {0: 2714559150}
+  rank 0 data : [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  UNION         : [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]  (10/10)
+  MISSING       : []   [OK - full coverage]
+
+seed source = module
+  seed per rank : {0: 7061}
+  rank 0 data : [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  UNION         : [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]  (10/10)
+  MISSING       : []   [OK - full coverage]

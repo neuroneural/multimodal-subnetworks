@@ -1,0 +1,5 @@
+Running on host: arctrddgxa002
+Job ID: 3726666
+SLURM_GPUS_ON_NODE: 1
+[parent] n_gpus(SLURM_GPUS_ON_NODE)=1  cuda.device_count()=1  passed_seed=6799  TOP_SEED=2882
+[rank 0/1] seeds@get_loaders: passed=6799   @prop=1022995810  module=2882
