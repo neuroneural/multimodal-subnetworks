@@ -49,7 +49,9 @@ class IndexDataset(Dataset):
         return self.n
 
     def __getitem__(self, i):
-        return i
+        # Return a (feature, index) tuple. Catalyst's on_batch_start does
+        # len(batch[0]), so batch[0] must be a [B]-shaped tensor, not a scalar.
+        return float(i), i
 
 
 class SeedRunner(dl.Runner):
@@ -120,10 +122,10 @@ class SeedRunner(dl.Runner):
         return {"train": loader}
 
     def handle_batch(self, batch):
-        idxs = batch.view(-1).tolist()
-        self._seen.extend(int(i) for i in idxs)
+        x, idx = batch                       # x: [B] float feature, idx: [B] the dataset indices
+        self._seen.extend(int(i) for i in idx.view(-1).tolist())
         # trivial forward/backward so DDP is happy (all params used, lr=0)
-        loss = self.model(batch.view(-1, 1).float()).sum()
+        loss = self.model(x.view(-1, 1).float()).sum()
         if self.is_train_loader:
             self.engine.backward(loss)
             self.optimizer.step()
