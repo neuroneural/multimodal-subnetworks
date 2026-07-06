@@ -7,12 +7,13 @@ Catalyst spawns one worker process per GPU with torch.multiprocessing.spawn
 This is the real version of what 01/02 showed with plain multiprocessing.
 
 Three seed sources on the runner (each maps to a spot in train_script_rev.py):
-  1. attr_seed   - passed into __init__, stored as an attribute
+  1. passed_seed - passed into __init__, stored as an attribute
                    (the `self.sampler_seed = sampler_seed` fix). -> SAME on every rank.
-  2. prop_seed   - an @property returning os.urandom on each access
+  2. @prop_seed  - an @property returning os.urandom on each access
                    (mirrors CustomRunner.seed's body).           -> DIFFERENT each access & rank.
   3. module_seed - a method reading the module-level TOP_SEED
                    (old sampler reading the top-of-file `SEED`).  -> DIFFERENT per rank (re-import).
+                   THIS IS WHAT WAS PASSED TO SAMPLERS IN THE CATALYST EXAMPLE CURRICULUM TRAINING SCRIPT.
 
 The number of ranks follows the GPUs allocated to the job (SLURM_GPUS_ON_NODE).
 
@@ -37,9 +38,9 @@ def n_gpus_allocated() -> int:
 
 
 class SeedRunner(dl.Runner):
-    def __init__(self, attr_seed, logdir="./_seed_out", epochs=1):
+    def __init__(self, passed_seed, logdir="./_seed_out", epochs=1):
         super().__init__()
-        self.attr_seed = attr_seed   # (1) passed in -> travels with the pickle -> same on all ranks
+        self.passed_seed = passed_seed  # (1) passed in -> travels with the pickle -> same on all ranks
         self._logdir = logdir
         self._epochs = epochs
 
@@ -97,8 +98,8 @@ class SeedRunner(dl.Runner):
             rank, world = 0, 1
         print(
             f"[rank {rank}/{world}] "
-            f"attr_seed={self.attr_seed:<6} "
-            f"prop_seed#1={self.prop_seed:<11} prop_seed#2={self.prop_seed:<11} "
+            f"passed_seed={self.passed_seed:<6} "
+            f"@prop_seed#1={self.prop_seed:<11} @prop_seed#2={self.prop_seed:<11} "
             f"module_seed(TOP_SEED)={self.module_seed()}",
             flush=True,
         )
@@ -114,15 +115,15 @@ class SeedRunner(dl.Runner):
 
 
 def main():
-    # This is a good seed that once passed to the runner, will be the same on every rank. 
-    attr_seed = random.randint(0, 9999)
+    # This is a good seed that once passed to the runner, will be the same on every rank.
+    passed_seed = random.randint(0, 9999)
     print(
         f"[parent] n_gpus(SLURM_GPUS_ON_NODE)={n_gpus_allocated()}  "
         f"cuda.device_count()={torch.cuda.device_count()}  "
-        f"attr_seed={attr_seed}  TOP_SEED={TOP_SEED}",
+        f"passed_seed={passed_seed}  TOP_SEED={TOP_SEED}",
         flush=True,
     )
-    SeedRunner(attr_seed=attr_seed).run()
+    SeedRunner(passed_seed=passed_seed).run()
 
 
 if __name__ == "__main__":
